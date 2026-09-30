@@ -7,6 +7,8 @@
  * Editors and clients in any language can consume the spec directly.
  */
 
+import type { AIAgentEvent } from './ai/taskTypes.js';
+
 export type ServerMessage =
   | ProviderCapabilities
   | AgentCreated
@@ -38,7 +40,8 @@ export type ServerMessage =
   | ExternalAssetDirectoriesUpdated
   | AreaMappingsLoaded
   | WorkspaceFolders
-  | AgentDiagnostics;
+  | AgentDiagnostics
+  | AIAgentEvent;
 
 export type ClientMessage =
   | WebviewReady

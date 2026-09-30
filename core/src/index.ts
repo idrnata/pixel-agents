@@ -2,6 +2,8 @@
 // Everything in this package is types-only (no runtime behavior)
 
 export type { StateAdapter } from './adapter.js';
+export * from './ai/agentDefinitions.js';
+export * from './ai/taskTypes.js';
 export {
   BASH_COMMAND_DISPLAY_MAX_LENGTH,
   HOOK_API_PREFIX,

@@ -1,12 +1,12 @@
 import { useEffect, useState } from 'react';
 
-import { agentManager } from '../agents/AgentManager.js';
-import type { AgentMessage, AgentState } from '../agents/types.js';
+import type { ApplicationAgent } from '../../../core/src/index.js';
+import { aiAgentClient } from '../services/aiAgentClient.js';
 import { Button } from './ui/Button.js';
 import { Modal } from './ui/Modal.js';
 
 interface AgentDetailsModalProps {
-  agent: AgentState | null;
+  agent: ApplicationAgent | null;
   isOpen: boolean;
   onClose: () => void;
   onSendToDesk?: (charId: number) => void;
@@ -25,7 +25,6 @@ export function AgentDetailsModal({
   const [messages, setMessages] = useState<Array<{ sender: 'user' | 'agent'; text: string }>>([]);
   const [input, setInput] = useState('');
   const [isSending, setIsSending] = useState(false);
-  const [recentTeamMessages, setRecentTeamMessages] = useState<AgentMessage[]>([]);
 
   useEffect(() => {
     if (agent) {
@@ -35,14 +34,13 @@ export function AgentDetailsModal({
           text: `Hello! I am ${agent.name}, ${agent.role} in INDRA AI OFFICE. Standing by for instructions or task queries.`,
         },
       ]);
-      // Fetch recent messages involving this agent
-      const allMsgs = agentManager.getMessages();
-      const agentMsgs = allMsgs.filter((m) => m.fromAgentId === agent.id || m.toAgentId === agent.id);
-      setRecentTeamMessages(agentMsgs.slice(-4));
     }
   }, [agent]);
 
   if (!isOpen || !agent) return null;
+
+  const activeTask = aiAgentClient.getActiveTaskForAgent(agent.id);
+  const recentCompletedTask = aiAgentClient.getTasks().find((t) => t.assignedAgentId === agent.id && t.status === 'completed');
 
   const handleSend = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -54,42 +52,16 @@ export function AgentDetailsModal({
     setIsSending(true);
 
     try {
-      const res = await fetch('/api/agents/generate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          prompt: userText,
-          systemInstruction: `${agent.systemPrompt}\nYou are currently conversing live with the user in INDRA AI OFFICE. Be concise, brilliant, and stay in character.`,
-        }),
-      });
-      const data = (await res.json()) as { text?: string };
-      const reply = data.text || 'I have analyzed your input and am ready for next instructions.';
+      const reply = await aiAgentClient.chat(agent.id, userText);
       setMessages((prev) => [...prev, { sender: 'agent', text: reply }]);
-    } catch {
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Error communicating with agent.';
       setMessages((prev) => [
         ...prev,
-        { sender: 'agent', text: 'I am currently processing background tasks. Ready for instructions!' },
+        { sender: 'agent', text: `[Error: ${msg}]` },
       ]);
     } finally {
       setIsSending(false);
-    }
-  };
-
-  const getStatusColor = (status: AgentState['status']) => {
-    switch (status) {
-      case 'working':
-      case 'writing':
-      case 'reading':
-        return 'text-status-active border-status-active bg-status-active/10';
-      case 'thinking':
-      case 'waiting':
-        return 'text-status-permission border-status-permission bg-status-permission/10';
-      case 'completed':
-        return 'text-status-success border-status-success bg-status-success/10';
-      case 'error':
-        return 'text-status-error border-status-error bg-status-error/10';
-      default:
-        return 'text-text-muted border-border bg-bg-dark';
     }
   };
 
@@ -110,8 +82,14 @@ export function AgentDetailsModal({
             {/* Current Status */}
             <div className="text-xs bg-bg p-2 border border-border flex items-center justify-between">
               <span className="text-text-muted font-bold">Status:</span>
-              <span className={`font-bold uppercase text-[11px] px-2 py-0.5 border ${getStatusColor(agent.status)}`}>
-                {agent.status}
+              <span
+                className={`font-bold uppercase text-[11px] px-2 py-0.5 border ${
+                  activeTask
+                    ? 'text-status-active border-accent bg-accent/20 pixel-pulse'
+                    : 'text-status-success border-status-success/50 bg-status-success/10'
+                }`}
+              >
+                {activeTask ? activeTask.status.toUpperCase() : 'IDLE'}
               </span>
             </div>
 
@@ -119,49 +97,31 @@ export function AgentDetailsModal({
             <div className="text-xs bg-bg p-2 border border-border flex flex-col gap-0.5">
               <span className="text-text-muted font-bold text-[11px] uppercase">Current Task</span>
               <span className="text-accent-bright font-bold truncate">
-                {agent.currentTaskTitle || agent.currentTask || 'Idle (Standing by for objectives)'}
+                {activeTask?.title || 'Standing by for objectives'}
               </span>
-              {agent.currentStepDescription && (
-                <p className="text-[11px] text-text/80 mt-0.5 leading-snug">{agent.currentStepDescription}</p>
+              {activeTask?.currentStep && (
+                <p className="text-[11px] text-text/80 mt-0.5 leading-snug">{activeTask.currentStep}</p>
               )}
             </div>
 
-            {/* Current Output (if available) */}
-            {agent.latestOutput && (
+            {/* Recent Output (if completed recently) */}
+            {recentCompletedTask && (
               <div className="text-xs bg-bg p-2.5 border-2 border-accent/60 flex flex-col gap-1.5">
                 <div className="flex items-center justify-between">
-                  <span className="text-accent-bright font-bold text-[11px] uppercase">📄 Latest Output</span>
-                  <span className="text-[10px] text-text-muted">Structured</span>
+                  <span className="text-accent-bright font-bold text-[11px] uppercase">📄 Latest Deliverable</span>
+                  <span className="text-[10px] text-status-success font-bold">SUCCESS</span>
                 </div>
-                <p className="text-text/90 italic text-[11px]">{agent.latestOutput.summary}</p>
-
-                {agent.latestOutput.findings.length > 0 && (
-                  <div>
-                    <span className="text-[10px] font-bold text-text uppercase">Key Findings:</span>
-                    <ul className="list-disc list-inside space-y-0.5 text-[11px] text-text/80 mt-0.5">
-                      {agent.latestOutput.findings.slice(0, 3).map((f, i) => (
-                        <li key={i} className="truncate">
-                          {f}
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-
-                {agent.latestOutput.risks.length > 0 && (
-                  <div>
-                    <span className="text-[10px] font-bold text-warning uppercase">Risk Vectors:</span>
-                    <ul className="list-disc list-inside space-y-0.5 text-[11px] text-text/80 mt-0.5">
-                      {agent.latestOutput.risks.slice(0, 2).map((r, i) => (
-                        <li key={i} className="truncate">
-                          {r}
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
+                <p className="text-text/90 italic text-[11px] line-clamp-3">
+                  {recentCompletedTask.summary || recentCompletedTask.result}
+                </p>
               </div>
             )}
+
+            {/* Work Location */}
+            <div className="text-[11px] px-2 py-1 bg-bg border border-border flex items-center gap-1.5 text-text/80">
+              <span>📍</span>
+              <span className="font-bold text-accent-bright truncate">{agent.defaultWorkLocation}</span>
+            </div>
 
             {/* Core Capabilities */}
             <div className="mt-0.5">
@@ -175,9 +135,9 @@ export function AgentDetailsModal({
               </div>
             </div>
 
-            {/* Movement Controls (Desk / Meeting / Office) */}
+            {/* Movement Controls */}
             <div className="pt-2 border-t border-border flex flex-col gap-1.5">
-              <span className="text-[10px] uppercase font-bold text-text-muted">Direct Agent Movement</span>
+              <span className="text-[10px] uppercase font-bold text-text-muted">Office Interaction</span>
               <div className="grid grid-cols-3 gap-1.5">
                 {onSendToDesk && (
                   <button
@@ -223,28 +183,11 @@ export function AgentDetailsModal({
           </div>
         </div>
 
-        {/* Right: Recent Team Messages & Interactive Live Chat */}
+        {/* Right: Live Agent Dialog (via server-side Gemini) */}
         <div className="w-full md:w-7/12 flex flex-col justify-between gap-3 h-80 md:h-[60vh]">
           {/* Messages Container */}
           <div className="flex-1 bg-bg-dark border-2 border-border p-3 overflow-y-auto flex flex-col gap-2.5 pixel-scrollbar">
-            {/* Recent Team Messages */}
-            {recentTeamMessages.length > 0 && (
-              <div className="mb-2 pb-2 border-b border-border/80 flex flex-col gap-1.5">
-                <span className="text-[10px] uppercase font-bold text-text-muted">Recent Team Communications</span>
-                {recentTeamMessages.map((m) => (
-                  <div key={m.id} className="p-1.5 bg-bg border border-border/70 text-[11px] flex flex-col gap-0.5">
-                    <div className="flex items-center justify-between text-[10px] text-text-muted">
-                      <span className="font-bold text-accent-bright">{m.fromAgentName}</span>
-                      <span>{new Date(m.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
-                    </div>
-                    <p className="text-text/90 line-clamp-2">{m.content}</p>
-                  </div>
-                ))}
-              </div>
-            )}
-
-            {/* Live Chat Messages */}
-            <span className="text-[10px] uppercase font-bold text-text-muted">Live Agent Dialog</span>
+            <span className="text-[10px] uppercase font-bold text-text-muted">Live Conversation with {agent.name}</span>
             {messages.map((m, idx) => (
               <div
                 key={idx}

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
-import { agentManager, agentOrchestrator, type AgentState, type AgentTask } from './agents/index.js';
+import type { AgentTask, ApplicationAgent } from '../../core/src/index.js';
 import { toMajorMinor } from './changelogData.js';
 import { AgentDetailsModal } from './components/AgentDetailsModal.js';
 import { AgentsDrawer } from './components/AgentsDrawer.js';
@@ -31,6 +31,7 @@ import { migrateLayoutColors } from './office/layout/layoutSerializer.js';
 import { getPetCount } from './office/sprites/petSpriteData.js';
 import { EditTool, type OfficeLayout } from './office/types.js';
 import { isBrowserRuntime, isE2E } from './runtime.js';
+import { aiAgentClient } from './services/aiAgentClient.js';
 import { installTestHooks } from './testHooks.js';
 import { transport } from './transport/index.js';
 
@@ -49,14 +50,15 @@ function getOfficeState(): OfficeState {
 
 function App() {
   // ── AI Agents & Tasks State ─────────────────────────────────
-  const [agentStates, setAgentStates] = useState<AgentState[]>(() => agentManager.getAllStates());
-  const [tasks, setTasks] = useState<AgentTask[]>(() => agentOrchestrator.getTasks());
+  const [applicationAgents] = useState<ApplicationAgent[]>(() => aiAgentClient.getAgents());
+  const [tasks, setTasks] = useState<AgentTask[]>(() => aiAgentClient.getTasks());
+  const [sessionStartTime] = useState(() => Date.now());
   const [activeBottomTab, setActiveBottomTab] = useState<'office' | 'tasks' | 'agents' | 'reports'>('office');
   const [isTaskCreateOpen, setIsTaskCreateOpen] = useState(false);
   const [isTasksDrawerOpen, setIsTasksDrawerOpen] = useState(false);
   const [isAgentsDrawerOpen, setIsAgentsDrawerOpen] = useState(false);
   const [isReportsDrawerOpen, setIsReportsDrawerOpen] = useState(false);
-  const [selectedAgentModal, setSelectedAgentModal] = useState<AgentState | null>(null);
+  const [selectedAgentModal, setSelectedAgentModal] = useState<ApplicationAgent | null>(null);
 
   // Browser runtime: dispatch mock messages after the useExtensionMessages listener has been registered
   useEffect(() => {
@@ -65,56 +67,62 @@ function App() {
     }
   }, []);
 
-  // Initialize the 3 core AI agents in OfficeState
+  // Initialize the 3 core AI agents in OfficeState exactly once
   useEffect(() => {
     const timer = setTimeout(() => {
       const office = getOfficeState();
       // Ensure the 3 core agents are spawned in officeState at dedicated desks
-      office.addAgent(1, 0, 0, undefined, false, 'MANAGEMENT'); // Manager (Indra)
-      office.addAgent(2, 1, 0, undefined, false, 'RESEARCH');   // Researcher (Atlas)
-      office.addAgent(3, 2, 0, undefined, false, 'QUANT_LAB');  // Analyst (Cyra)
+      // Manager (Indra -> charId 1, palette 0)
+      office.addAgent(1, 0, 0, undefined, false, 'MANAGEMENT');
+      // Researcher (Atlas -> charId 2, palette 1)
+      office.addAgent(2, 1, 0, undefined, false, 'RESEARCH');
+      // Analyst (Cyra -> charId 3, palette 2)
+      office.addAgent(3, 2, 0, undefined, false, 'QUANT_LAB');
     }, 400);
 
     return () => clearTimeout(timer);
   }, []);
 
-  // Listen to Agent events and update office visual & movement states
+  // Listen to Server AI Agent execution events and update OfficeState & tasks
   useEffect(() => {
-    const unsubscribe = agentManager.on((event) => {
-      setAgentStates(agentManager.getAllStates());
-      setTasks(agentOrchestrator.getTasks());
+    // Initial fetch of tasks
+    void aiAgentClient.fetchTasks().then((hydrated) => setTasks(hydrated));
 
+    const unsubscribe = aiAgentClient.on((event) => {
+      setTasks(aiAgentClient.getTasks());
+
+      const agent = aiAgentClient.getAgent(event.agentId);
+      if (!agent) return;
+
+      const charId = agent.characterId;
       const office = getOfficeState();
-      if (event.characterId !== undefined) {
-        const charId = event.characterId;
 
-        // State-driven movement
-        if (event.type === 'agent.moved' && event.targetLocation) {
-          if (event.targetLocation === 'desk') {
-            office.sendToSeat(charId);
-          } else if (event.targetLocation === 'meeting') {
-            office.sendToMeetingArea(charId);
-          } else if (event.targetLocation === 'office') {
-            office.sendToOfficeArea(charId);
-          }
-        }
-
-        if (event.type === 'agent.thinking') {
+      if (event.type === 'aiAgent.taskCreated') {
+        office.sendToSeat(charId);
+      } else if (event.type === 'aiAgent.planning') {
+        office.sendToSeat(charId);
+        office.setAgentActive(charId, true);
+        office.showWaitingBubble(charId);
+      } else if (event.type === 'aiAgent.thinking') {
+        office.sendToSeat(charId);
+        office.setAgentActive(charId, true);
+        office.showWaitingBubble(charId);
+      } else if (event.type === 'aiAgent.working') {
+        office.sendToSeat(charId);
+        office.setAgentActive(charId, true);
+        office.setAgentTool(charId, event.toolName || 'work');
+      } else if (event.type === 'aiAgent.completed') {
+        office.setAgentActive(charId, false);
+        office.setAgentTool(charId, null);
+        office.dismissBubble(charId);
+        office.sendToOfficeArea(charId);
+        setTimeout(() => {
           office.sendToSeat(charId);
-          office.setAgentActive(charId, true);
-          office.showWaitingBubble(charId);
-        } else if (event.type === 'agent.reading' || event.type === 'agent.writing' || event.type === 'agent.working') {
-          office.sendToSeat(charId);
-          office.setAgentActive(charId, true);
-          office.setAgentTool(charId, event.toolName || 'work');
-        } else if (event.type === 'agent.completed') {
-          office.setAgentActive(charId, false);
-          office.setAgentTool(charId, null);
-          office.dismissBubble(charId);
-        } else if (event.type === 'agent.error') {
-          office.setAgentActive(charId, false);
-          office.setAgentTool(charId, 'error');
-        }
+        }, 8000);
+      } else if (event.type === 'aiAgent.failed') {
+        office.setAgentActive(charId, false);
+        office.setAgentTool(charId, 'error');
+        office.dismissBubble(charId);
       }
     });
 
@@ -192,9 +200,9 @@ function App() {
   }, [ghostHeadlessAgents, setGhostHeadlessAgents]);
 
   const handleSelectAgent = useCallback((id: number) => {
-    const ag = agentManager.getAgentByCharacterId(id);
+    const ag = aiAgentClient.getAgentByCharacterId(id);
     if (ag) {
-      setSelectedAgentModal(ag.getState());
+      setSelectedAgentModal(ag);
     }
   }, []);
 
@@ -298,7 +306,7 @@ function App() {
     return Array.isArray(current.areas) && current.areas.length > 0;
   }, [editor.editorTick]);
 
-  const activeTask = tasks.find((t) => t.status === 'in_progress');
+  const activeTask = tasks.find((t) => t.status === 'working' || t.status === 'planning' || t.status === 'thinking');
   const layout = getOfficeState().getLayout();
   const selectedFurniture = layout.furniture.find((f) => f.uid === editorState.selectedFurnitureUid);
 
@@ -333,8 +341,32 @@ function App() {
     <div ref={containerRef} className="w-full h-full relative overflow-hidden bg-bg touch-none select-none">
       {/* ── Top Header for Mobile & Desktop (Brand, Status & New Task) ── */}
       <MobileHeader
-        agents={agentStates}
-        activeTask={activeTask}
+        agents={applicationAgents.map((ag) => ({
+          id: ag.id,
+          characterId: ag.characterId,
+          name: ag.name,
+          role: ag.role,
+          avatar: ag.avatar,
+          status: aiAgentClient.getActiveTaskForAgent(ag.id) ? 'working' : 'idle',
+          currentTask: aiAgentClient.getActiveTaskForAgent(ag.id)?.id ?? null,
+          currentTaskTitle: aiAgentClient.getActiveTaskForAgent(ag.id)?.title ?? null,
+          currentStepDescription: aiAgentClient.getActiveTaskForAgent(ag.id)?.currentStep ?? null,
+          position: { x: 0, y: 0 },
+          personality: ag.description,
+          systemPrompt: ag.systemInstruction,
+          capabilities: ag.capabilities,
+          lastActive: sessionStartTime,
+        }))}
+        activeTask={activeTask ? {
+          id: activeTask.id,
+          title: activeTask.title,
+          description: activeTask.description,
+          status: 'in_progress',
+          createdAt: activeTask.createdAt,
+          managerId: 'manager',
+          subtasks: [],
+          timeline: [],
+        } : undefined}
         onOpenTasks={() => handleSelectBottomTab('tasks')}
         onOpenCreateTask={() => setIsTaskCreateOpen(true)}
       />
@@ -443,22 +475,34 @@ function App() {
         onToggleEditMode={editor.handleToggleEditMode}
         isSettingsOpen={isSettingsOpen}
         onToggleSettings={() => setIsSettingsOpen((v) => !v)}
-        tasks={tasks}
-        agentCount={agentStates.length}
+        tasks={tasks.map((t) => ({
+          id: t.id,
+          title: t.title,
+          description: t.description,
+          status: t.status === 'completed' ? 'completed' : t.status === 'failed' ? 'failed' : 'in_progress',
+          createdAt: t.createdAt,
+          completedAt: t.completedAt,
+          managerId: t.assignedAgentId,
+          subtasks: [],
+          timeline: [],
+          finalReport: t.result,
+          summary: t.summary,
+        }))}
+        agentCount={applicationAgents.length}
       />
 
       {/* ── Task Creation Modal ── */}
       <TaskCreateModal
         isOpen={isTaskCreateOpen}
         onClose={() => setIsTaskCreateOpen(false)}
-        onSubmit={(title, description) => {
+        onSubmit={(agentId, title, description) => {
           unlockAudio();
-          void agentOrchestrator.createTaskAndExecute(title, description);
+          void aiAgentClient.createTask(agentId, title, description);
           handleSelectBottomTab('tasks');
         }}
       />
 
-      {/* ── Tasks & Execution Graph Drawer (Requirement 9) ── */}
+      {/* ── Tasks Drawer (Requirement 5 & 10) ── */}
       <TasksDrawer
         isOpen={isTasksDrawerOpen}
         onClose={() => {
@@ -472,14 +516,14 @@ function App() {
         }}
       />
 
-      {/* ── Agents Team Roster Drawer (Requirement 8) ── */}
+      {/* ── Agents Team Roster Drawer (Requirement 4) ── */}
       <AgentsDrawer
         isOpen={isAgentsDrawerOpen}
         onClose={() => {
           setIsAgentsDrawerOpen(false);
           setActiveBottomTab('office');
         }}
-        agents={agentStates}
+        agents={applicationAgents}
         onSelectAgent={(ag) => setSelectedAgentModal(ag)}
         onFocusCharacter={(charId) => {
           const office = getOfficeState();
@@ -490,7 +534,7 @@ function App() {
         }}
       />
 
-      {/* ── Executive Master Reports Drawer (Requirement 10) ── */}
+      {/* ── Executive Reports Drawer (Requirement 10) ── */}
       <ReportsDrawer
         isOpen={isReportsDrawerOpen}
         onClose={() => {

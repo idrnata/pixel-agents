@@ -7,6 +7,11 @@ import Fastify from 'fastify';
 
 import type { AgentRuntime } from './agentRuntime.js';
 import type { AgentStateStore } from './agentStateStore.js';
+import {
+  aiAgentRuntime,
+  APPLICATION_AGENTS,
+  getAllApplicationAgents,
+} from './ai/index.js';
 import type {
   AssetCache,
   ReloadAssetsSideEffect,
@@ -84,8 +89,13 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Http
 
   // ── Routes ──────────────────────────────────────────────────
 
+  aiAgentRuntime.setBroadcaster((event) => {
+    options.store.broadcast(event);
+  });
+
   registerHealthRoute(app);
   registerHookRoute(app, options);
+  registerAiRoutes(app);
   registerWebSocketRoute(app, options);
 
   // ── Listen ──────────────────────────────────────────────────
@@ -102,9 +112,92 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Http
 function registerHealthRoute(app: FastifyInstance): void {
   app.get('/api/health', async () => ({
     status: 'ok',
+    service: 'INDRA AI OFFICE',
+    geminiConfigured: !!process.env.GEMINI_API_KEY,
+    applicationAgents: Object.keys(APPLICATION_AGENTS).length,
     uptime: Math.floor((Date.now() - startTime) / 1000),
     pid: process.pid,
   }));
+}
+
+// ── Application AI Agents ───────────────────────────────────────
+
+function registerAiRoutes(app: FastifyInstance): void {
+  // GET /api/ai/agents - list application agents
+  app.get('/api/ai/agents', async () => ({
+    agents: getAllApplicationAgents().map((a) => ({
+      id: a.id,
+      name: a.name,
+      role: a.role,
+      avatar: a.avatar,
+      description: a.description,
+      characterId: a.characterId,
+      palette: a.palette,
+      defaultWorkLocation: a.defaultWorkLocation,
+      capabilities: a.capabilities,
+    })),
+  }));
+
+  // GET /api/ai/tasks - list all tasks
+  app.get('/api/ai/tasks', async () => ({
+    tasks: aiAgentRuntime.getTasks(),
+  }));
+
+  // POST /api/ai/tasks - create and asynchronously execute task
+  app.post<{
+    Body: {
+      agentId?: string;
+      title?: string;
+      description?: string;
+    };
+  }>('/api/ai/tasks', async (request, reply) => {
+    const { agentId, title, description } = request.body || {};
+
+    if (!agentId) {
+      reply.status(400).send({ error: 'Missing "agentId" field.' });
+      return;
+    }
+    if (!title || typeof title !== 'string' || title.trim().length === 0) {
+      reply.status(400).send({ error: 'Missing or empty "title" field.' });
+      return;
+    }
+    if (!description || typeof description !== 'string' || description.trim().length === 0) {
+      reply.status(400).send({ error: 'Missing or empty "description" field.' });
+      return;
+    }
+
+    try {
+      const task = aiAgentRuntime.createTask(agentId, title, description);
+      reply.status(201).send({
+        taskId: task.id,
+        status: task.status,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      reply.status(400).send({ error: message });
+    }
+  });
+
+  // POST /api/ai/chat - live chat with an application agent
+  app.post<{
+    Body: {
+      agentId?: string;
+      message?: string;
+    };
+  }>('/api/ai/chat', async (request, reply) => {
+    const { agentId, message } = request.body || {};
+    if (!agentId || !message) {
+      reply.status(400).send({ error: 'Missing agentId or message.' });
+      return;
+    }
+    try {
+      const text = await aiAgentRuntime.chatWithAgent(agentId, message);
+      reply.send({ text });
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      reply.status(500).send({ error: errMsg });
+    }
+  });
 }
 
 // ── Hook Events ────────────────────────────────────────────────

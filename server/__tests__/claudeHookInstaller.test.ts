@@ -483,7 +483,7 @@ describe('claudeHookInstaller', () => {
   });
 
   // 8e. An unwritable .claude directory is a hard failure, not a silent no-op
-  it.skipIf(process.platform === 'win32')(
+  it.skipIf(process.platform === 'win32' || (typeof process.getuid === 'function' && process.getuid() === 0))(
     'rejects when the .claude directory is not writable',
     async () => {
       const claudeDir = path.join(tmpBase, '.claude');

@@ -1,15 +1,10 @@
-import { GoogleGenAI } from '@google/genai';
 import type { IncomingMessage, ServerResponse } from 'http';
 
-// Initialize server-side Gemini SDK
-const ai = new GoogleGenAI({
-  apiKey: process.env.GEMINI_API_KEY,
-  httpOptions: {
-    headers: {
-      'User-Agent': 'aistudio-build',
-    },
-  },
-});
+import {
+  aiAgentRuntime,
+  APPLICATION_AGENTS,
+  getAllApplicationAgents,
+} from '../../../server/src/ai/index.js';
 
 function parseJsonBody<T>(req: IncomingMessage): Promise<T> {
   return new Promise((resolve, reject) => {
@@ -43,6 +38,21 @@ const inMemoryOfficeState = {
   customLayout: null as unknown,
 };
 
+// SSE subscribers for environments where /ws is not available
+const sseClients = new Set<ServerResponse>();
+
+// Connect aiAgentRuntime broadcast to SSE clients
+aiAgentRuntime.setBroadcaster((event) => {
+  const data = `data: ${JSON.stringify(event)}\n\n`;
+  for (const client of sseClients) {
+    try {
+      client.write(data);
+    } catch {
+      sseClients.delete(client);
+    }
+  }
+});
+
 export async function handleApiRequest(
   req: IncomingMessage,
   res: ServerResponse,
@@ -63,47 +73,113 @@ export async function handleApiRequest(
     sendJson(res, 200, {
       status: 'ok',
       service: 'INDRA AI OFFICE',
-      version: '1.0.0',
+      version: '2.0.0',
       geminiConfigured: !!process.env.GEMINI_API_KEY,
+      applicationAgents: Object.keys(APPLICATION_AGENTS).length,
       timestamp: Date.now(),
     });
     return true;
   }
 
-  // ── POST /api/agents/generate (Server-Side Gemini Calling) ────
-  if (pathname === '/api/agents/generate' && req.method === 'POST') {
+  // ── GET /api/ai/agents ────────────────────────────────────────
+  if (pathname === '/api/ai/agents' && req.method === 'GET') {
+    sendJson(res, 200, {
+      agents: getAllApplicationAgents().map((a) => ({
+        id: a.id,
+        name: a.name,
+        role: a.role,
+        avatar: a.avatar,
+        description: a.description,
+        characterId: a.characterId,
+        palette: a.palette,
+        defaultWorkLocation: a.defaultWorkLocation,
+        capabilities: a.capabilities,
+      })),
+    });
+    return true;
+  }
+
+  // ── GET /api/ai/tasks ─────────────────────────────────────────
+  if (pathname === '/api/ai/tasks' && req.method === 'GET') {
+    sendJson(res, 200, {
+      tasks: aiAgentRuntime.getTasks(),
+    });
+    return true;
+  }
+
+  // ── POST /api/ai/tasks ────────────────────────────────────────
+  if (pathname === '/api/ai/tasks' && req.method === 'POST') {
     try {
       const body = await parseJsonBody<{
-        prompt: string;
-        systemInstruction?: string;
-        temperature?: number;
-        jsonMode?: boolean;
+        agentId?: string;
+        title?: string;
+        description?: string;
       }>(req);
 
-      if (!body.prompt) {
-        sendJson(res, 400, { error: 'Missing "prompt" parameter' });
+      if (!body.agentId) {
+        sendJson(res, 400, { error: 'Missing "agentId" field.' });
+        return true;
+      }
+      if (!body.title || typeof body.title !== 'string' || body.title.trim().length === 0) {
+        sendJson(res, 400, { error: 'Missing or empty "title" field.' });
+        return true;
+      }
+      if (!body.description || typeof body.description !== 'string' || body.description.trim().length === 0) {
+        sendJson(res, 400, { error: 'Missing or empty "description" field.' });
         return true;
       }
 
-      const response = await ai.models.generateContent({
-        model: 'gemini-3.8-flash',
-        contents: body.prompt,
-        config: {
-          systemInstruction: body.systemInstruction,
-          temperature: body.temperature ?? 0.7,
-          ...(body.jsonMode ? { responseMimeType: 'application/json' } : {}),
-        },
+      const task = aiAgentRuntime.createTask(body.agentId, body.title, body.description);
+      sendJson(res, 201, {
+        taskId: task.id,
+        status: task.status,
       });
-
-      sendJson(res, 200, { text: response.text || '' });
       return true;
     } catch (err) {
-      console.error('[API] Gemini generate error:', err);
-      sendJson(res, 500, {
-        error: `Gemini API invocation failed: ${err instanceof Error ? err.message : String(err)}`,
-      });
+      const message = err instanceof Error ? err.message : String(err);
+      sendJson(res, 400, { error: message });
       return true;
     }
+  }
+
+  // ── POST /api/ai/chat ─────────────────────────────────────────
+  if (pathname === '/api/ai/chat' && req.method === 'POST') {
+    try {
+      const body = await parseJsonBody<{
+        agentId?: string;
+        message?: string;
+      }>(req);
+
+      if (!body.agentId || !body.message) {
+        sendJson(res, 400, { error: 'Missing "agentId" or "message" field.' });
+        return true;
+      }
+
+      const text = await aiAgentRuntime.chatWithAgent(body.agentId, body.message);
+      sendJson(res, 200, { text });
+      return true;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      sendJson(res, 500, { error: message });
+      return true;
+    }
+  }
+
+  // ── GET /api/ai/events (SSE Stream) ───────────────────────────
+  if (pathname === '/api/ai/events' && req.method === 'GET') {
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+      'Access-Control-Allow-Origin': '*',
+    });
+    res.write(':\n\n'); // SSE comment to open stream
+    sseClients.add(res);
+
+    req.on('close', () => {
+      sseClients.delete(res);
+    });
+    return true;
   }
 
   // ── GET /api/office & POST /api/office ────────────────────────
