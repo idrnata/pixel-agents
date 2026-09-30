@@ -1,0 +1,9 @@
+{
+  "name": "INDRA AI OFFICE",
+  "description": "Interactive pixel-art virtual office with autonomous AI agents powered by Gemini",
+  "version": "1.0.0",
+  "capabilities": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

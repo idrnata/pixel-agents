@@ -13,6 +13,7 @@ import {
   decodeAllFurniture,
   decodeAllWalls,
 } from '../core/src/assets/loader.ts';
+import { handleApiRequest } from './src/server/apiHandler.ts';
 
 // ── Decoded asset cache (invalidated on file change) ─────────────────────────
 
@@ -57,6 +58,16 @@ function browserMockAssetsPlugin(): Plugin {
     configureServer(server) {
       // Strip trailing slash: '/' → '', '/sub/' → '/sub'
       const base = server.config.base.replace(/\/$/, '');
+
+      // Server-Side Backend API
+      server.middlewares.use(async (req, res, next) => {
+        const url = req.url ? new URL(req.url, 'http://localhost').pathname : '';
+        if (url.startsWith('/api/')) {
+          const handled = await handleApiRequest(req, res, url);
+          if (handled) return;
+        }
+        next();
+      });
 
       // Catalog & index (existing)
       server.middlewares.use(`${base}/assets/furniture-catalog.json`, (_req, res) => {
@@ -124,6 +135,10 @@ export default defineConfig({
   build: {
     outDir: '../dist/webview',
     emptyOutDir: true,
+  },
+  server: {
+    host: '0.0.0.0',
+    port: 3000,
   },
   base: './',
 });

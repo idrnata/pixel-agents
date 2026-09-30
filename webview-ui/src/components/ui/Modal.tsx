@@ -7,7 +7,7 @@ interface ModalProps {
   onClose: () => void;
   title: ReactNode;
   children: ReactNode;
-  /** z-index for backdrop (modal gets +1). Default 49 */
+  /** z-index for backdrop (modal gets +1). Default 50 */
   zIndex?: number;
   className?: string;
 }
@@ -24,15 +24,25 @@ export function Modal({
 
   return (
     <>
-      <div className="fixed inset-0 bg-black/50" style={{ zIndex }} onClick={onClose} />
       <div
-        className={`fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 bg-bg border-2 border-border rounded-none shadow-pixel p-4 min-w-xs ${className}`}
+        className="fixed inset-0 bg-black/70 backdrop-blur-xs animate-fadeIn"
+        style={{ zIndex }}
+        onClick={onClose}
+      />
+      <div
+        className={`fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 bg-bg border-2 border-border shadow-pixel p-3 sm:p-4 w-[95vw] sm:w-[90vw] max-w-2xl max-h-[88vh] overflow-y-auto pixel-scrollbar animate-scaleIn ${className}`}
         style={{ zIndex: zIndex + 1 }}
       >
-        <div className="flex items-center justify-between py-4 px-10 border-b border-border mb-4">
-          <span className="text-accent-bright text-2xl">{title}</span>
-          <Button variant="ghost" size="icon" onClick={onClose}>
-            x
+        <div className="flex items-center justify-between pb-2.5 mb-3 border-b-2 border-border gap-2">
+          <span className="text-accent-bright text-base sm:text-lg font-bold truncate">{title}</span>
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={onClose}
+            className="min-h-[44px] min-w-[44px] font-bold text-sm hover:bg-btn-hover"
+            title="Close"
+          >
+            ✕
           </Button>
         </div>
         {children}

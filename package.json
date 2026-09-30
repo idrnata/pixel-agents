@@ -88,13 +88,14 @@
     }
   },
   "scripts": {
+    "dev": "npm run dev --workspace=webview-ui",
+    "build": "npm run build --workspace=webview-ui",
     "vscode:prepublish": "npm run package",
     "vscode:uninstall": "node ./dist/uninstall.js",
     "prepack": "npm run package",
     "build:extension": "node esbuild.js --production",
     "build:webview": "cd webview-ui && npm run build",
     "compile": "npm run asyncapi:generate && npm run check-types && npm run lint && node esbuild.js && npm run build:webview",
-    "build": "npm run compile",
     "watch": "npm-run-all -p watch:*",
     "watch:esbuild": "node esbuild.js --watch",
     "watch:tsc": "tsc --noEmit --watch --project tsconfig.json",
@@ -160,6 +161,7 @@
     "@fastify/cors": "^11.2.0",
     "@fastify/static": "^10.1.2",
     "@fastify/websocket": "^11.2.0",
+    "@google/genai": "^2.24.0",
     "fastify": "^5.8.5"
   },
   "overrides": {

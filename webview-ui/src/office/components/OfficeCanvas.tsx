@@ -872,8 +872,205 @@ export function OfficeCanvas({
     if (e.button === 1) e.preventDefault();
   }, []);
 
+  // ── Mobile Safari / Touch Gestures ──────────────────────────
+  const touchStateRef = useRef<{
+    startX: number;
+    startY: number;
+    startPanX: number;
+    startPanY: number;
+    startTime: number;
+    initialDistance: number | null;
+    initialZoom: number;
+    isPinching: boolean;
+    hasMoved: boolean;
+  }>({
+    startX: 0,
+    startY: 0,
+    startPanX: 0,
+    startPanY: 0,
+    startTime: 0,
+    initialDistance: null,
+    initialZoom: zoom,
+    isPinching: false,
+    hasMoved: false,
+  });
+
+  const handleTouchStart = useCallback(
+    (e: TouchEvent) => {
+      unlockAudio();
+
+      if (e.touches.length === 1 && e.touches[0]) {
+        const touch = e.touches[0];
+        touchStateRef.current = {
+          startX: touch.clientX,
+          startY: touch.clientY,
+          startPanX: panRef.current.x,
+          startPanY: panRef.current.y,
+          startTime: Date.now(),
+          initialDistance: null,
+          initialZoom: zoom,
+          isPinching: false,
+          hasMoved: false,
+        };
+
+        if (isEditMode) {
+          const tile = screenToTile(touch.clientX, touch.clientY);
+          if (tile) {
+            editorState.ghostCol = tile.col;
+            editorState.ghostRow = tile.row;
+            if (editorState.activeTool !== EditTool.SELECT) {
+              editorState.isDragging = true;
+              onEditorTileAction(tile.col, tile.row);
+            }
+          }
+        }
+      } else if (e.touches.length === 2 && e.touches[0] && e.touches[1]) {
+        // 2-finger pinch
+        const t1 = e.touches[0];
+        const t2 = e.touches[1];
+        const dist = Math.hypot(t1.clientX - t2.clientX, t1.clientY - t2.clientY);
+        touchStateRef.current.isPinching = true;
+        touchStateRef.current.initialDistance = dist;
+        touchStateRef.current.initialZoom = zoom;
+      }
+    },
+    [zoom, panRef, isEditMode, screenToTile, editorState, onEditorTileAction],
+  );
+
+  const handleTouchMove = useCallback(
+    (e: TouchEvent) => {
+      e.preventDefault(); // Stop mobile Safari elastic bounce / scrolling
+      const dpr = window.devicePixelRatio || 1;
+
+      if (e.touches.length === 2 && e.touches[0] && e.touches[1]) {
+        // Pinch zoom
+        const t1 = e.touches[0];
+        const t2 = e.touches[1];
+        const dist = Math.hypot(t1.clientX - t2.clientX, t1.clientY - t2.clientY);
+        const initDist = touchStateRef.current.initialDistance;
+        if (initDist && initDist > 10) {
+          const ratio = dist / initDist;
+          let targetZoom = touchStateRef.current.initialZoom;
+          if (ratio > 1.3) targetZoom = Math.min(ZOOM_MAX, targetZoom + 1);
+          else if (ratio < 0.7) targetZoom = Math.max(ZOOM_MIN, targetZoom - 1);
+          if (targetZoom !== zoom) {
+            onZoomChange(targetZoom);
+          }
+        }
+        return;
+      }
+
+      if (e.touches.length === 1 && e.touches[0]) {
+        const touch = e.touches[0];
+        const dx = touch.clientX - touchStateRef.current.startX;
+        const dy = touch.clientY - touchStateRef.current.startY;
+
+        if (Math.hypot(dx, dy) > 8) {
+          touchStateRef.current.hasMoved = true;
+        }
+
+        if (isEditMode && editorState.activeTool !== EditTool.SELECT) {
+          const tile = screenToTile(touch.clientX, touch.clientY);
+          if (tile) {
+            editorState.ghostCol = tile.col;
+            editorState.ghostRow = tile.row;
+            onEditorTileAction(tile.col, tile.row);
+          }
+        } else {
+          // Pan camera
+          officeState.cameraFollowId = null;
+          officeState.cancelGreeterCamera();
+          panRef.current = clampPan(
+            touchStateRef.current.startPanX + dx * dpr,
+            touchStateRef.current.startPanY + dy * dpr,
+          );
+        }
+      }
+    },
+    [zoom, onZoomChange, isEditMode, editorState, screenToTile, onEditorTileAction, officeState, panRef, clampPan],
+  );
+
+  const handleTouchEnd = useCallback(() => {
+    const state = touchStateRef.current;
+      const duration = Date.now() - state.startTime;
+
+      if (!state.hasMoved && !state.isPinching && duration < 350) {
+        // Clean tap!
+        const tapX = state.startX;
+        const tapY = state.startY;
+
+        const pos = screenToWorld(tapX, tapY);
+        if (pos) {
+          const hitId = officeState.getCharacterAt(pos.worldX, pos.worldY);
+          if (hitId !== null) {
+            officeState.dismissBubble(hitId);
+            if (officeState.selectedAgentId === hitId) {
+              officeState.selectedAgentId = null;
+              officeState.cameraFollowId = null;
+            } else {
+              officeState.selectedAgentId = hitId;
+              officeState.cameraFollowId = hitId;
+            }
+            onClick(hitId);
+            return;
+          }
+
+          const petId = officeState.getPetAt(pos.worldX, pos.worldY);
+          if (petId !== null) {
+            const pet = officeState.pets.find((p) => p.id === petId);
+            if (pet?.bubbleType) {
+              officeState.dismissPetBubble(petId);
+            } else {
+              officeState.showPetBubble(petId);
+            }
+            return;
+          }
+
+          if (officeState.selectedAgentId !== null) {
+            const tile = screenToTile(tapX, tapY);
+            if (tile) {
+              const seatId = officeState.getSeatAtTile(tile.col, tile.row);
+              if (seatId) {
+                const seat = officeState.seats.get(seatId);
+                const selectedCh = officeState.characters.get(officeState.selectedAgentId);
+                if (seat && selectedCh && !seat.assigned) {
+                  officeState.reassignSeat(officeState.selectedAgentId, seatId);
+                  officeState.selectedAgentId = null;
+                  officeState.cameraFollowId = null;
+                  return;
+                }
+              }
+              // Walk selected agent to tapped tile
+              officeState.walkToTile(officeState.selectedAgentId, tile.col, tile.row);
+            }
+          }
+        }
+      }
+
+      editorState.isDragging = false;
+      touchStateRef.current.isPinching = false;
+      touchStateRef.current.initialDistance = null;
+    },
+    [screenToWorld, officeState, onClick, screenToTile, editorState],
+  );
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    canvas.addEventListener('touchstart', handleTouchStart, { passive: false });
+    canvas.addEventListener('touchmove', handleTouchMove, { passive: false });
+    canvas.addEventListener('touchend', handleTouchEnd, { passive: false });
+    canvas.addEventListener('touchcancel', handleTouchEnd, { passive: false });
+    return () => {
+      canvas.removeEventListener('touchstart', handleTouchStart);
+      canvas.removeEventListener('touchmove', handleTouchMove);
+      canvas.removeEventListener('touchend', handleTouchEnd);
+      canvas.removeEventListener('touchcancel', handleTouchEnd);
+    };
+  }, [handleTouchStart, handleTouchMove, handleTouchEnd]);
+
   return (
-    <div ref={containerRef} className="w-full h-full relative overflow-hidden bg-bg">
+    <div ref={containerRef} className="w-full h-full relative overflow-hidden bg-bg touch-none">
       <canvas
         ref={canvasRef}
         onMouseMove={handleMouseMove}
@@ -883,7 +1080,7 @@ export function OfficeCanvas({
         onAuxClick={handleAuxClick}
         onMouseLeave={handleMouseLeave}
         onContextMenu={handleContextMenu}
-        className="block"
+        className="block touch-none"
       />
     </div>
   );

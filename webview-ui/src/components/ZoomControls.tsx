@@ -58,7 +58,7 @@ export function ZoomControls({ zoom, onZoomChange }: ZoomControlsProps) {
       {/* Zoom level indicator at top-center */}
       {showLevel && (
         <div
-          className="absolute top-10 left-1/2 -translate-x-1/2 z-10 pixel-panel pb-4 px-16 text-lg select-none pointer-events-none"
+          className="absolute top-16 left-1/2 -translate-x-1/2 z-30 pixel-panel py-1 px-4 text-sm font-bold select-none pointer-events-none bg-bg/90 border-2 border-border shadow-pixel"
           style={{
             opacity: fadeOut ? 0 : 1,
             transition: `opacity ${ZOOM_LEVEL_FADE_DURATION_SEC}s ease-out`,
@@ -68,14 +68,14 @@ export function ZoomControls({ zoom, onZoomChange }: ZoomControlsProps) {
         </div>
       )}
 
-      {/* Vertically stacked round buttons — top-left */}
-      <div className="absolute top-8 left-8 z-10 flex flex-col gap-4">
+      {/* Vertically stacked round buttons — bottom-right */}
+      <div className="absolute right-3 bottom-20 md:right-6 md:bottom-24 z-20 flex flex-col gap-2">
         <Button
           size="icon_lg"
           onClick={() => onZoomChange(zoom + 1)}
           disabled={maxDisabled}
-          className="border-border! shadow-pixel disabled:hover:bg-btn-bg disabled:cursor-default disabled:opacity-(--btn-disabled-opacity)"
-          title="Zoom in (Ctrl+Scroll)"
+          className="border-2! border-border! shadow-pixel min-h-[44px] min-w-[44px] bg-bg/90 hover:bg-btn-hover"
+          title="Zoom in (+)"
         >
           <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
             <line
@@ -84,7 +84,7 @@ export function ZoomControls({ zoom, onZoomChange }: ZoomControlsProps) {
               x2="9"
               y2="15"
               stroke="currentColor"
-              strokeWidth="2"
+              strokeWidth="2.5"
               strokeLinecap="round"
             />
             <line
@@ -93,7 +93,7 @@ export function ZoomControls({ zoom, onZoomChange }: ZoomControlsProps) {
               x2="15"
               y2="9"
               stroke="currentColor"
-              strokeWidth="2"
+              strokeWidth="2.5"
               strokeLinecap="round"
             />
           </svg>
@@ -102,8 +102,8 @@ export function ZoomControls({ zoom, onZoomChange }: ZoomControlsProps) {
           size="icon_lg"
           onClick={() => onZoomChange(zoom - 1)}
           disabled={minDisabled}
-          className="border-border! shadow-pixel disabled:hover:bg-btn-bg disabled:cursor-default disabled:opacity-(--btn-disabled-opacity)"
-          title="Zoom out (Ctrl+Scroll)"
+          className="border-2! border-border! shadow-pixel min-h-[44px] min-w-[44px] bg-bg/90 hover:bg-btn-hover"
+          title="Zoom out (-)"
         >
           <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
             <line
@@ -112,7 +112,7 @@ export function ZoomControls({ zoom, onZoomChange }: ZoomControlsProps) {
               x2="15"
               y2="9"
               stroke="currentColor"
-              strokeWidth="2"
+              strokeWidth="2.5"
               strokeLinecap="round"
             />
           </svg>

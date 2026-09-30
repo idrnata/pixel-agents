@@ -638,6 +638,28 @@ export class OfficeState {
     }
   }
 
+  /** Send an agent to the collaborative meeting / lounge area */
+  sendToMeetingArea(agentId: number): void {
+    const ch = this.characters.get(agentId);
+    if (!ch) return;
+    // Meeting room walkable coords in default layout (cols 12-17, rows 13-17)
+    const meetingCandidates = this.walkableTiles.filter((t) => t.col >= 12 && t.col <= 17 && t.row >= 13 && t.row <= 17);
+    if (meetingCandidates.length === 0) return;
+    const target = meetingCandidates[(agentId + Math.floor(Math.random() * meetingCandidates.length)) % meetingCandidates.length];
+    this.walkToTile(agentId, target.col, target.row);
+  }
+
+  /** Send an agent to the open office / coffee break area */
+  sendToOfficeArea(agentId: number): void {
+    const ch = this.characters.get(agentId);
+    if (!ch) return;
+    // Office break / coffee area walkable coords (cols 2-5, rows 17-19)
+    const officeCandidates = this.walkableTiles.filter((t) => t.col >= 2 && t.col <= 6 && t.row >= 17 && t.row <= 19);
+    if (officeCandidates.length === 0) return;
+    const target = officeCandidates[(agentId + Math.floor(Math.random() * officeCandidates.length)) % officeCandidates.length];
+    this.walkToTile(agentId, target.col, target.row);
+  }
+
   /** Send an agent back to their currently assigned seat */
   sendToSeat(agentId: number): void {
     const ch = this.characters.get(agentId);
