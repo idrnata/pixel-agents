@@ -31,7 +31,12 @@ export function initFirebaseAdmin(): boolean {
       // ignore
     }
 
-    if (clientEmail && privateKey) {
+    if (
+      clientEmail &&
+      privateKey &&
+      clientEmail.includes('@') &&
+      privateKey.includes('BEGIN PRIVATE KEY')
+    ) {
       initializeApp({
         credential: cert({
           projectId: configProjectId,
@@ -74,7 +79,7 @@ export function getAdminAuth(): ReturnType<typeof getAuth> | null {
 
 export async function verifyFirebaseIdToken(token: string): Promise<{ uid: string; email?: string }> {
   if (!token || typeof token !== 'string') {
-    throw new Error('Missing or invalid token.');
+    throw new Error('UNAUTHORIZED: Missing or invalid token.');
   }
 
   // Support dev / mock tokens in test and local environments

@@ -2,44 +2,65 @@
   "entities": {
     "Task": {
       "title": "Task",
-      "description": "An AI agent task executed in INDRA AI OFFICE",
+      "description": "An autonomous AI agent task",
       "type": "object",
       "properties": {
-        "id": { "type": "string" },
+        "id": { "type": "string", "maxLength": 128 },
         "title": { "type": "string", "maxLength": 200 },
         "description": { "type": "string", "maxLength": 5000 },
+        "userId": { "type": "string" },
         "assignedAgentId": { "type": "string", "enum": ["manager", "researcher", "analyst"] },
+        "parentTaskId": { "type": "string" },
         "status": { "type": "string", "enum": ["queued", "planning", "thinking", "working", "waiting", "completed", "failed"] },
         "createdAt": { "type": "number" },
         "startedAt": { "type": "number" },
         "completedAt": { "type": "number" },
         "currentStep": { "type": "string", "maxLength": 500 },
         "result": { "type": "string", "maxLength": 50000 },
-        "summary": { "type": "string", "maxLength": 5000 },
-        "error": { "type": "string", "maxLength": 5000 }
+        "error": { "type": "string", "maxLength": 5000 },
+        "metadata": { "type": "object" }
       },
-      "required": ["id", "title", "assignedAgentId", "status", "createdAt"]
+      "required": ["id", "title", "userId", "assignedAgentId", "status", "createdAt"]
     },
-    "OfficeSettings": {
-      "title": "OfficeSettings",
-      "description": "Office custom layout and persistent settings",
+    "TaskEvent": {
+      "title": "TaskEvent",
+      "description": "Event logged during task execution",
       "type": "object",
       "properties": {
-        "id": { "type": "string" },
-        "layout": { "type": "string", "maxLength": 500000 },
+        "id": { "type": "string", "maxLength": 128 },
+        "taskId": { "type": "string", "maxLength": 128 },
+        "userId": { "type": "string" },
+        "agentId": { "type": "string" },
+        "type": { "type": "string" },
+        "timestamp": { "type": "number" },
+        "payload": { "type": "object" }
+      },
+      "required": ["id", "taskId", "userId", "agentId", "type", "timestamp"]
+    },
+    "Setting": {
+      "title": "Setting",
+      "description": "User specific office settings and layout",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "layout": { "type": "string", "maxLength": 100000 },
         "updatedAt": { "type": "number" }
       },
       "required": ["id", "updatedAt"]
     }
   },
   "firestore": {
-    "/tasks/{taskId}": {
+    "/users/{userId}/tasks/{taskId}": {
       "schema": { "$ref": "#/entities/Task" },
-      "description": "Collection of autonomous AI agent tasks"
+      "description": "User-isolated task documents"
     },
-    "/officeSettings/{settingId}": {
-      "schema": { "$ref": "#/entities/OfficeSettings" },
-      "description": "Virtual office custom layout and state"
+    "/users/{userId}/taskEvents/{eventId}": {
+      "schema": { "$ref": "#/entities/TaskEvent" },
+      "description": "User-isolated task events"
+    },
+    "/users/{userId}/settings/{settingId}": {
+      "schema": { "$ref": "#/entities/Setting" },
+      "description": "User-isolated settings"
     }
   }
 }

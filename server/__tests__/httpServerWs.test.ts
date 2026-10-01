@@ -105,7 +105,7 @@ describe('/ws connection gate', () => {
 
   beforeEach(() => {
     tmpBase = fs.mkdtempSync(path.join(os.tmpdir(), 'pxl-ws-test-'));
-    fs.mkdirSync(path.join(tmpBase, '.pixel-agents'), { recursive: true });
+    fs.mkdirSync(path.join(tmpBase, '.pixel-agents', 'servers'), { recursive: true });
     server = new PixelAgentsServer();
   });
 
@@ -120,7 +120,7 @@ describe('/ws connection gate', () => {
     }
   });
 
-  async function startStandalone(): Promise<{ port: number }> {
+  async function startStandalone(): Promise<{ port: number; token: string }> {
     const config = await server.start({
       embedded: false,
       store: new AgentStateStore(),
@@ -131,7 +131,7 @@ describe('/ws connection gate', () => {
         if (enabled) grantHooksConsent(providerId);
       },
     });
-    return { port: config.port };
+    return { port: config.port, token: config.token };
   }
 
   // 1. THE finding: a WebSocket connect is not blocked by CORS, so a page the

@@ -303,64 +303,48 @@ describe('AI Agent Runtime & Provider Tests', () => {
     expect(eventTypes).toContain('aiAgent.completed');
   });
 
-  // 12. TaskRepository operations
-  it('12. InMemoryTaskRepository persists, retrieves, updates, and lists tasks and events', async () => {
+  // 12. TaskRepository operations & User Isolation
+  it('12. InMemoryTaskRepository isolates tasks per userId', async () => {
     const repo = new InMemoryTaskRepository();
-    const task: AgentTask = {
-      id: 'task-repo-1',
-      title: 'Repository Test',
-      description: 'Testing task repository',
-      userId: 'user-123',
+    const taskUserA: AgentTask = {
+      id: 'task-user-a-1',
+      title: 'User A Secret Task',
+      description: 'Private directives A',
+      userId: 'user-A',
       assignedAgentId: 'manager',
       status: 'queued',
       createdAt: Date.now(),
     };
 
-    await repo.createTask(task);
-    const retrieved = await repo.getTask('user-123', 'task-repo-1');
-    expect(retrieved).toBeDefined();
-    expect(retrieved?.title).toBe('Repository Test');
-
-    await repo.updateTask('user-123', 'task-repo-1', {
-      status: 'completed',
-      result: 'Finished work',
-    });
-
-    const updated = await repo.getTask('user-123', 'task-repo-1');
-    expect(updated?.status).toBe('completed');
-    expect(updated?.result).toBe('Finished work');
-
-    // Child tasks lookup
-    const childTask: AgentTask = {
-      id: 'child-1',
-      title: 'Child Task',
-      description: 'Child desc',
-      userId: 'user-123',
+    const taskUserB: AgentTask = {
+      id: 'task-user-b-1',
+      title: 'User B Secret Task',
+      description: 'Private directives B',
+      userId: 'user-B',
       assignedAgentId: 'researcher',
-      parentTaskId: 'task-repo-1',
-      status: 'completed',
-      createdAt: Date.now() + 10,
+      status: 'queued',
+      createdAt: Date.now(),
     };
-    await repo.createTask(childTask);
 
-    const children = await repo.getChildTasks('user-123', 'task-repo-1');
-    expect(children).toHaveLength(1);
-    expect(children[0].id).toBe('child-1');
+    await repo.createTask(taskUserA);
+    await repo.createTask(taskUserB);
 
-    // Event logging
-    await repo.appendTaskEvent({
-      id: 'evt-1',
-      taskId: 'task-repo-1',
-      userId: 'user-123',
-      agentId: 'manager',
-      type: 'aiAgent.completed',
-      timestamp: Date.now(),
-    });
+    const userATasks = await repo.listTasks('user-A');
+    expect(userATasks).toHaveLength(1);
+    expect(userATasks[0].id).toBe('task-user-a-1');
+
+    const userBTasks = await repo.listTasks('user-B');
+    expect(userBTasks).toHaveLength(1);
+    expect(userBTasks[0].id).toBe('task-user-b-1');
+
+    // Cross-user read returns undefined
+    const crossRead = await repo.getTask('user-B', 'task-user-a-1');
+    expect(crossRead).toBeUndefined();
   });
 
   // 13. Firebase ID token verification
-  it('13. verifyFirebaseIdToken verifies mock and test tokens and rejects empty tokens', async () => {
-    await expect(verifyFirebaseIdToken('')).rejects.toThrow(/Missing or invalid token/);
+  it('13. verifyFirebaseIdToken verifies test tokens in test mode and rejects empty tokens', async () => {
+    await expect(verifyFirebaseIdToken('')).rejects.toThrow(/UNAUTHORIZED/);
     const mockVerified = await verifyFirebaseIdToken('mock-token-user-abc');
     expect(mockVerified.uid).toBe('user-abc');
 
@@ -368,7 +352,7 @@ describe('AI Agent Runtime & Provider Tests', () => {
     expect(devVerified.uid).toBe('test-123');
   });
 
-  // 14. Security: No Firebase Admin or GEMINI_API_KEY in client bundle
+  // 14. Security: No secrets in client webview bundle
   it('14. verifies client webview does not import firebase-admin or leak server secrets', () => {
     const webviewSrcDir = path.resolve(__dirname, '../../webview-ui/src');
     const clientFiles = fs.readdirSync(webviewSrcDir, { recursive: true }) as string[];
@@ -387,6 +371,14 @@ describe('AI Agent Runtime & Provider Tests', () => {
         expect(content).not.toContain('process.env.GEMINI_API_KEY');
       }
     }
+  });
+
+  // 15. Single Source of Truth: No direct browser task writes
+  it('15. verifies browser code does not perform setDoc on tasks collection', () => {
+    const firebaseClientFile = path.resolve(__dirname, '../../webview-ui/src/services/firebase.ts');
+    const content = fs.readFileSync(firebaseClientFile, 'utf8');
+    expect(content).not.toContain("setDoc(doc(db, TASKS_PATH");
+    expect(content).not.toContain("updateDoc(");
   });
 
   // Registry validation

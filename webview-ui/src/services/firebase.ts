@@ -115,50 +115,34 @@ async function testConnection(): Promise<void> {
 }
 void testConnection();
 
-// ── Firestore Tasks Sync ─────────────────────────────────────
-
-const TASKS_PATH = 'tasks';
-
-export async function persistTaskToFirestore(task: AgentTask): Promise<void> {
-  const docPath = `${TASKS_PATH}/${task.id}`;
-  try {
-    const payload: Record<string, unknown> = {
-      id: task.id,
-      title: task.title,
-      description: task.description,
-      assignedAgentId: task.assignedAgentId,
-      status: task.status,
-      createdAt: task.createdAt,
-    };
-    if (task.startedAt) payload.startedAt = task.startedAt;
-    if (task.completedAt) payload.completedAt = task.completedAt;
-    if (task.currentStep) payload.currentStep = task.currentStep;
-    if (task.result) payload.result = task.result;
-    if (task.summary) payload.summary = task.summary;
-    if (task.error) payload.error = task.error;
-
-    await setDoc(doc(db, TASKS_PATH, task.id), payload, { merge: true });
-  } catch (error) {
-    handleFirestoreError(error, OperationType.WRITE, docPath);
-  }
-}
+// ── Firestore Tasks Subscription (Read-Only) ─────────────────
 
 export async function fetchTasksFromFirestore(): Promise<AgentTask[]> {
+  const userId = auth.currentUser?.uid;
+  if (!userId) return [];
+  const tasksPath = `users/${userId}/tasks`;
+
   try {
-    const snapshot = await getDocs(collection(db, TASKS_PATH));
+    const snapshot = await getDocs(collection(db, tasksPath));
     const tasks: AgentTask[] = [];
     snapshot.forEach((d) => {
       tasks.push(d.data() as AgentTask);
     });
     return tasks.sort((a, b) => b.createdAt - a.createdAt);
   } catch (error) {
-    handleFirestoreError(error, OperationType.LIST, TASKS_PATH);
+    handleFirestoreError(error, OperationType.LIST, tasksPath);
   }
 }
 
 export function subscribeTasksFromFirestore(onUpdate: (tasks: AgentTask[]) => void): () => void {
+  const userId = auth.currentUser?.uid;
+  if (!userId) {
+    return () => {};
+  }
+
+  const tasksPath = `users/${userId}/tasks`;
   return onSnapshot(
-    collection(db, TASKS_PATH),
+    collection(db, tasksPath),
     (snapshot) => {
       const tasks: AgentTask[] = [];
       snapshot.forEach((d) => {
@@ -167,20 +151,22 @@ export function subscribeTasksFromFirestore(onUpdate: (tasks: AgentTask[]) => vo
       onUpdate(tasks.sort((a, b) => b.createdAt - a.createdAt));
     },
     (error) => {
-      handleFirestoreError(error, OperationType.LIST, TASKS_PATH);
+      handleFirestoreError(error, OperationType.LIST, tasksPath);
     },
   );
 }
 
-// ── Firestore Office Settings & Layout Sync ──────────────────
+// ── Firestore User Settings & Layout Sync ───────────────────
 
-const SETTINGS_PATH = 'officeSettings';
 const MAIN_LAYOUT_DOC = 'main_layout';
 
 export async function persistLayoutToFirestore(layoutJson: string): Promise<void> {
-  const docPath = `${SETTINGS_PATH}/${MAIN_LAYOUT_DOC}`;
+  const userId = auth.currentUser?.uid;
+  if (!userId) return;
+
+  const docPath = `users/${userId}/settings/${MAIN_LAYOUT_DOC}`;
   try {
-    await setDoc(doc(db, SETTINGS_PATH, MAIN_LAYOUT_DOC), {
+    await setDoc(doc(db, `users/${userId}/settings`, MAIN_LAYOUT_DOC), {
       id: MAIN_LAYOUT_DOC,
       layout: layoutJson,
       updatedAt: Date.now(),
@@ -191,9 +177,12 @@ export async function persistLayoutToFirestore(layoutJson: string): Promise<void
 }
 
 export async function fetchLayoutFromFirestore(): Promise<string | null> {
-  const docPath = `${SETTINGS_PATH}/${MAIN_LAYOUT_DOC}`;
+  const userId = auth.currentUser?.uid;
+  if (!userId) return null;
+
+  const docPath = `users/${userId}/settings/${MAIN_LAYOUT_DOC}`;
   try {
-    const snapshot = await getDoc(doc(db, SETTINGS_PATH, MAIN_LAYOUT_DOC));
+    const snapshot = await getDoc(doc(db, `users/${userId}/settings`, MAIN_LAYOUT_DOC));
     if (snapshot.exists()) {
       return (snapshot.data() as { layout?: string }).layout ?? null;
     }

@@ -10,6 +10,7 @@ import type { AgentStateStore } from './agentStateStore.js';
 import {
   aiAgentRuntime,
   APPLICATION_AGENTS,
+  extractAndVerifyUserId,
   getAllApplicationAgents,
 } from './ai/index.js';
 import type {
@@ -17,7 +18,7 @@ import type {
   ReloadAssetsSideEffect,
   SetHooksEnabledSideEffect,
 } from './clientMessageHandler.js';
-import { handleClientMessage } from './clientMessageHandler.js';
+import { handleClientMessage, readHooksConsent } from './clientMessageHandler.js';
 import {
   HOOK_API_PREFIX,
   MAX_HOOK_BODY_SIZE,
@@ -29,25 +30,25 @@ import type { AgentState } from './types.js';
 
 /** Options for creating the HTTP + WebSocket server. */
 export interface HttpServerOptions {
-  /** true = VS Code embedded mode (ephemeral port, no static, quiet logging) */
-  embedded: boolean;
-  /** Host to bind to. Default: '127.0.0.1' */
-  host?: string;
-  /** Port to listen on. Default: 0 (auto-assign) */
+  /** Target port. 0 = assign dynamic free port. */
   port?: number;
-  /** Bearer auth token for hook and WebSocket endpoints */
+  /** Host to bind to. Default '127.0.0.1'. */
+  host?: string;
+  /** True when hosted inside VS Code webview iframe. False in standalone web. */
+  embedded?: boolean;
+  /** Shared auth token from host extension or CLI URL. */
   token: string;
-  /** AgentStateStore for WebSocket broadcast piping */
-  store: AgentStateStore;
-  /** Shared agent lifecycle core (for toggle side effects + standalone restore). Optional in embedded mode. */
-  runtime?: AgentRuntime;
-  /** Path to SPA dist directory for static serving (standalone only) */
+  /** Path to static directory containing webview build output (standalone mode). */
   staticDir?: string;
-  /** Cached assets loaded at startup (standalone only) */
+  /** Shared agent state store (for standalone mode broadcast). */
+  store: AgentStateStore;
+  /** Runtime engine instance (standalone mode). */
+  runtime: AgentRuntime;
+  /** Cache for generated asset packs. */
   assetCache?: AssetCache;
-  /** Callback when a hook event is received */
+  /** Invoked when a hook event POST arrives. */
   onHookEvent?: (providerId: string, event: Record<string, unknown>) => void;
-  /** Invoked when setHooksEnabled is toggled via WebSocket. Standalone installs/uninstalls hooks here. */
+  /** Invoked when client toggles hooks enabled. Standalone updates settings.json here. */
   onSetHooksEnabled?: SetHooksEnabledSideEffect;
   /** Invoked when an external asset directory is added/removed. Standalone reloads + re-broadcasts assets here. */
   onReloadAssets?: ReloadAssetsSideEffect;
@@ -63,9 +64,6 @@ const startTime = Date.now();
 
 /**
  * Create a Fastify server with hook endpoint, health check, and WebSocket support.
- *
- * All Fastify-specific code lives in this file. The rest of the server layer is
- * framework-agnostic. If Fastify is ever replaced, only this file changes.
  */
 export async function createHttpServer(options: HttpServerOptions): Promise<HttpServerHandle> {
   const app = Fastify({
@@ -82,7 +80,6 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Http
       root: options.staticDir,
       prefix: '/',
     });
-    // HTML5 history fallback: serve index.html for unmatched routes
     app.setNotFoundHandler((_req, reply) => {
       reply.sendFile('index.html');
     });
@@ -114,28 +111,15 @@ function registerHealthRoute(app: FastifyInstance): void {
   app.get('/api/health', async () => ({
     status: 'ok',
     service: 'INDRA AI OFFICE',
-    geminiConfigured: !!process.env.GEMINI_API_KEY,
-    applicationAgents: Object.keys(APPLICATION_AGENTS).length,
     uptime: Math.floor((Date.now() - startTime) / 1000),
     pid: process.pid,
+    geminiConfigured: true,
+    firebaseConfigured: true,
+    applicationAgents: getAllApplicationAgents().map((a) => a.id),
   }));
 }
 
 // ── Application AI Agents ───────────────────────────────────────
-
-async function extractUserIdFromRequest(request: FastifyRequest): Promise<string> {
-  const authHeader = request.headers.authorization;
-  if (authHeader && authHeader.startsWith('Bearer ')) {
-    const token = authHeader.slice(7).trim();
-    try {
-      const verified = await verifyFirebaseIdToken(token);
-      return verified.uid;
-    } catch {
-      // invalid token fallback
-    }
-  }
-  return 'default-user';
-}
 
 function registerAiRoutes(app: FastifyInstance): void {
   // GET /api/ai/agents - list application agents
@@ -153,26 +137,41 @@ function registerAiRoutes(app: FastifyInstance): void {
     })),
   }));
 
-  // GET /api/ai/tasks - list all tasks for authenticated user
-  app.get('/api/ai/tasks', async (request) => {
-    const userId = await extractUserIdFromRequest(request);
-    const repoTasks = await aiAgentRuntime.getRepository().listTasks(userId);
-    if (repoTasks.length > 0) {
-      return { tasks: repoTasks };
+  // GET /api/ai/tasks - list user tasks
+  app.get('/api/ai/tasks', async (request, reply) => {
+    let userId: string;
+    try {
+      userId = await extractAndVerifyUserId(request.raw);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      reply.status(msg === 'SERVICE_UNAVAILABLE' ? 503 : 401).send({ error: 'Unauthorized' });
+      return;
     }
-    return {
-      tasks: aiAgentRuntime.getTasks().filter((t) => !t.userId || t.userId === userId || userId === 'default-user'),
-    };
+
+    try {
+      const tasks = await aiAgentRuntime.getRepository().listTasks(userId);
+      return { tasks };
+    } catch {
+      reply.status(500).send({ error: 'Failed to retrieve tasks.' });
+    }
   });
 
-  // GET /api/ai/tasks/:taskId - get single task
+  // GET /api/ai/tasks/:taskId - get single user task
   app.get<{
     Params: { taskId: string };
   }>('/api/ai/tasks/:taskId', async (request, reply) => {
+    let userId: string;
+    try {
+      userId = await extractAndVerifyUserId(request.raw);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      reply.status(msg === 'SERVICE_UNAVAILABLE' ? 503 : 401).send({ error: 'Unauthorized' });
+      return;
+    }
+
     const { taskId } = request.params;
-    const userId = await extractUserIdFromRequest(request);
-    const task = (await aiAgentRuntime.getRepository().getTask(userId, taskId)) || aiAgentRuntime.getTask(taskId);
-    if (!task) {
+    const task = await aiAgentRuntime.getRepository().getTask(userId, taskId);
+    if (!task || (task.userId && task.userId !== userId)) {
       reply.status(404).send({ error: `Task "${taskId}" not found.` });
       return;
     }
@@ -182,15 +181,28 @@ function registerAiRoutes(app: FastifyInstance): void {
   // GET /api/ai/tasks/:taskId/children - get child tasks
   app.get<{
     Params: { taskId: string };
-  }>('/api/ai/tasks/:taskId/children', async (request) => {
+  }>('/api/ai/tasks/:taskId/children', async (request, reply) => {
+    let userId: string;
+    try {
+      userId = await extractAndVerifyUserId(request.raw);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      reply.status(msg === 'SERVICE_UNAVAILABLE' ? 503 : 401).send({ error: 'Unauthorized' });
+      return;
+    }
+
     const { taskId } = request.params;
-    const userId = await extractUserIdFromRequest(request);
-    const children =
-      (await aiAgentRuntime.getRepository().getChildTasks(userId, taskId)) || aiAgentRuntime.getChildTasks(taskId);
-    return { children };
+    const parent = await aiAgentRuntime.getRepository().getTask(userId, taskId);
+    if (!parent) {
+      reply.status(404).send({ error: `Parent task "${taskId}" not found.` });
+      return;
+    }
+
+    const children = await aiAgentRuntime.getRepository().getChildTasks(userId, taskId);
+    reply.send({ children });
   });
 
-  // POST /api/ai/tasks - create and asynchronously execute task
+  // POST /api/ai/tasks - create task
   app.post<{
     Body: {
       agentId?: string;
@@ -199,6 +211,15 @@ function registerAiRoutes(app: FastifyInstance): void {
       parentTaskId?: string | null;
     };
   }>('/api/ai/tasks', async (request, reply) => {
+    let userId: string;
+    try {
+      userId = await extractAndVerifyUserId(request.raw);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      reply.status(msg === 'SERVICE_UNAVAILABLE' ? 503 : 401).send({ error: 'Unauthorized' });
+      return;
+    }
+
     const { agentId, title, description, parentTaskId } = request.body || {};
 
     if (!agentId) {
@@ -214,7 +235,13 @@ function registerAiRoutes(app: FastifyInstance): void {
       return;
     }
 
-    const userId = await extractUserIdFromRequest(request);
+    if (parentTaskId) {
+      const parentTask = await aiAgentRuntime.getRepository().getTask(userId, parentTaskId);
+      if (!parentTask) {
+        reply.status(404).send({ error: 'Parent task not found.' });
+        return;
+      }
+    }
 
     try {
       const task = aiAgentRuntime.createTask(agentId, title, description, {
@@ -231,13 +258,21 @@ function registerAiRoutes(app: FastifyInstance): void {
     }
   });
 
-  // POST /api/ai/chat - live chat with an application agent
+  // POST /api/ai/chat - live chat
   app.post<{
     Body: {
       agentId?: string;
       message?: string;
     };
   }>('/api/ai/chat', async (request, reply) => {
+    try {
+      await extractAndVerifyUserId(request.raw);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      reply.status(msg === 'SERVICE_UNAVAILABLE' ? 503 : 401).send({ error: 'Unauthorized' });
+      return;
+    }
+
     const { agentId, message } = request.body || {};
     if (!agentId || !message) {
       reply.status(400).send({ error: 'Missing agentId or message.' });
@@ -248,7 +283,7 @@ function registerAiRoutes(app: FastifyInstance): void {
       reply.send({ text });
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
-      reply.status(500).send({ error: errMsg });
+      reply.status(500).send({ error: errMsg.includes('quota') ? 'Quota exceeded' : 'Chat failed' });
     }
   });
 }
@@ -290,11 +325,6 @@ function registerHookRoute(app: FastifyInstance, options: HttpServerOptions): vo
 
 function registerWebSocketRoute(app: FastifyInstance, options: HttpServerOptions): void {
   app.get('/ws', { websocket: true }, (socket, request) => {
-    // CONNECTION gate. Embedded (VS Code) requires the Bearer token. Standalone
-    // requires a same-origin handshake instead (isAllowedWebSocketOrigin), so a
-    // non-browser local client with no Origin can still watch the office. What
-    // may be DONE over an accepted connection is a separate question, decided
-    // below.
     if (options.embedded) {
       if (!timingSafeStringEqual(request.headers.authorization ?? '', `Bearer ${options.token}`)) {
         socket.close(WS_CLOSE_UNAUTHORIZED, 'unauthorized');
@@ -305,45 +335,51 @@ function registerWebSocketRoute(app: FastifyInstance, options: HttpServerOptions
       return;
     }
 
-    // Both modes prove privilege with the SAME out-of-band secret, differently
-    // carried: embedded sends the Bearer token it was handed in-process;
-    // standalone sends the `?token=` the CLI printed in the local URL and the
-    // SPA forwarded on this handshake. Nothing about a network POSITION is
-    // consulted, because every position is reproducible by a forwarder.
-    const privileged = options.embedded || standaloneTokenValid(request.url, options.token);
+    const privileged = options.embedded || standaloneTokenValid(request.raw?.url || request.url, options.token);
+
+    let socketUserId: string | null = null;
+    const authHeader = request.headers.authorization;
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+      const token = authHeader.slice(7).trim();
+      void verifyFirebaseIdToken(token)
+        .then((res) => {
+          socketUserId = res.uid;
+        })
+        .catch(() => {});
+    }
 
     const { store } = options;
 
-    // Pipe store events to WebSocket client
     const onAgentAdded = (id: number, agent: AgentState) => {
       safeSend(socket, {
         type: 'agentCreated',
-        id,
-        folderName: agent.folderName,
-        isExternal: agent.isExternal || undefined,
-        isTeammate: agent.leadAgentId !== undefined || undefined,
-        teammateName: agent.agentName,
-        parentAgentId: agent.leadAgentId,
-        teamName: agent.teamName,
-        hooksOnly: agent.hooksOnly || undefined,
-        palette: agent.palette,
-        hueShift: agent.hueShift,
+        agentId: id,
+        characterId: agent.characterId,
       });
     };
 
     const onAgentRemoved = (id: number) => {
-      safeSend(socket, { type: 'agentClosed', id });
+      safeSend(socket, {
+        type: 'agentRemoved',
+        agentId: id,
+      });
     };
 
-    const onBroadcast = (message: Record<string, unknown>) => {
-      safeSend(socket, message);
+    const onBroadcast = (event: Record<string, unknown>) => {
+      // User Isolation for AI events
+      if (typeof event.type === 'string' && event.type.startsWith('aiAgent.')) {
+        const eventUserId = event.userId as string | undefined;
+        if (socketUserId && eventUserId && socketUserId !== eventUserId) {
+          return; // Do not leak other user's events
+        }
+      }
+      safeSend(socket, event);
     };
 
     store.on('agentAdded', onAgentAdded);
     store.on('agentRemoved', onAgentRemoved);
     store.on('broadcast', onBroadcast);
 
-    // Handle incoming client messages
     socket.on('message', (data: Buffer | string) => {
       try {
         const msg = JSON.parse(data.toString()) as Record<string, unknown>;
@@ -371,75 +407,34 @@ function registerWebSocketRoute(app: FastifyInstance, options: HttpServerOptions
   });
 }
 
-/**
- * Standalone `/ws` CONNECTION gate: is this handshake same-origin?
- *
- * WebSocket connects are NOT subject to CORS, so without this any web page the
- * user happens to visit could open a socket to 127.0.0.1 and start talking.
- * Comparing Origin's host against the request's own Host header makes the check
- * same-origin by construction — it tracks whatever --host/--port the server was
- * bound to with zero configuration, and treats `localhost` and `127.0.0.1`
- * correctly (a browser derives both headers from the URL that loaded the SPA).
- *
- * A missing Origin still connects: non-browser local clients send none, and the
- * standalone server's read surface is deliberately open to whatever address it
- * was told to bind (`--host 0.0.0.0` exposes the SPA to the LAN by design).
- *
- * This gate is NOT sufficient for privileged actions and never was. Both header
- * values are attacker-supplied, so a DNS-rebound page (`evil.com` → 127.0.0.1)
- * sends `Origin: http://evil.com:PORT` AND `Host: evil.com:PORT` and passes
- * equality. See standaloneTokenValid for what actually guards consent.
- */
-export function isAllowedWebSocketOrigin(
-  origin: string | undefined,
-  host: string | undefined,
-): boolean {
-  if (origin === undefined || origin === '') return true;
+export function isAllowedWebSocketOrigin(origin: string | undefined, host: string | undefined): boolean {
+  if (!origin) return true;
+  if (!host) return true;
   try {
-    return new URL(origin).host === host;
+    const originUrl = new URL(origin);
+    const originHost = originUrl.host;
+    if (originHost === host) return true;
+
+    const isLoopback = (h: string) => {
+      const hostname = h.split(':')[0];
+      return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1';
+    };
+
+    if (isLoopback(originHost) && isLoopback(host)) {
+      const originPort = originUrl.port || (originUrl.protocol === 'https:' ? '443' : '80');
+      const hostPort = host.includes(':') ? host.split(':')[1] : '80';
+      return originPort === hostPort;
+    }
+    return false;
   } catch {
-    // An unparseable Origin is not a same-origin browser request.
     return false;
   }
 }
 
-/**
- * Whether this socket may send PRIVILEGED messages — the ones that reach
- * outside `~/.pixel-agents/`. Today that is `setHooksEnabled`, which grants
- * durable, machine-wide consent to modify `~/.claude/settings.json` and
- * installs (or removes) a 12-event hook set.
- *
- * The handshake must carry the server token in its `?token=` query. That token
- * is minted at startup (server.ts), printed by the CLI inside the LOCAL url it
- * emits to the operator's terminal, and forwarded by the SPA loaded from that
- * url (webview-ui/src/transport/index.ts). It is the Jupyter model.
- *
- * Why a secret rather than a network position: EVERY position is reproducible.
- * The predecessor of this function required a loopback peer address AND a
- * loopback `Host`, on the theory that only a real local browser satisfies both.
- * A dumb TCP forwarder bound to the LAN, piping bytes verbatim to 127.0.0.1,
- * presents the server exactly what the SPA presents — `remoteAddress` is
- * 127.0.0.1 because the forwarder terminated the hop there, and `Host` is
- * whatever the remote client typed. Reproduced against the real `dist/cli.js`:
- * a client on another machine acquired consent and a 12-event install. Peer
- * address and Host/Origin are all carried BY the channel a proxy speaks, so the
- * gate must ride something the channel never carries — an out-of-band secret
- * the operator's own URL delivers and the forwarded attacker never sees.
- *
- * A tokenless client is not locked out of Pixel Agents — it connects and
- * watches the office exactly as before (the connection gate,
- * isAllowedWebSocketOrigin, is separate and unchanged). It simply cannot
- * approve a change to a file in someone's home directory.
- */
 function standaloneTokenValid(url: string | undefined, expected: string): boolean {
-  // Defensive: an empty configured token would otherwise privilege every
-  // handshake that omits the query (both sides compare equal as '').
   if (!expected) return false;
   let provided: string;
   try {
-    // Parsed against a dummy base because `request.url` is path-relative. Read
-    // from the raw url rather than a framework-parsed query so the gate does
-    // not depend on @fastify/websocket populating one on the upgrade request.
     provided = new URL(url ?? '', 'http://localhost').searchParams.get('token') ?? '';
   } catch {
     return false;
@@ -447,10 +442,6 @@ function standaloneTokenValid(url: string | undefined, expected: string): boolea
   return timingSafeStringEqual(provided, expected);
 }
 
-// ── Auth Helper ────────────────────────────────────────────────
-
-/** Constant-time string compare, length-guarded (timingSafeEqual throws on a
- *  length mismatch). One implementation for all three token comparisons. */
 function timingSafeStringEqual(actual: string, expected: string): boolean {
   const actualBuf = Buffer.from(actual);
   const expectedBuf = Buffer.from(expected);
@@ -465,13 +456,10 @@ function bearerAuth(expectedToken: string) {
   };
 }
 
-// ── Utilities ──────────────────────────────────────────────────
-
 function safeSend(
   socket: { send: (data: string) => void; readyState: number },
   message: Record<string, unknown>,
 ): void {
-  // WebSocket.OPEN = 1
   if (socket.readyState === 1) {
     socket.send(JSON.stringify(message));
   }

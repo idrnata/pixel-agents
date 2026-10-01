@@ -8,7 +8,6 @@ import { transport } from '../transport/index.js';
 import {
   ensureAnonymousAuth,
   fetchTasksFromFirestore,
-  persistTaskToFirestore,
   subscribeTasksFromFirestore,
 } from './firebase.js';
 
@@ -17,7 +16,6 @@ export type AIEventListener = (event: AIAgentEvent) => void;
 class AIAgentClient {
   private tasks = new Map<string, AgentTask>();
   private listeners = new Set<AIEventListener>();
-  private sse: EventSource | null = null;
   private isInitialized = false;
 
   constructor() {
@@ -28,7 +26,7 @@ class AIAgentClient {
     if (typeof window === 'undefined' || this.isInitialized) return;
     this.isInitialized = true;
 
-    // 1. Listen via WebSocket transport
+    // 1. Primary realtime channel: WebSocket transport
     transport.onMessage((msg) => {
       const raw = msg as unknown as Record<string, unknown>;
       if (raw && typeof raw.type === 'string' && raw.type.startsWith('aiAgent.')) {
@@ -36,10 +34,7 @@ class AIAgentClient {
       }
     });
 
-    // 2. Also connect SSE as backup for environments without raw WebSocket routing
-    this.initSse();
-
-    // 3. Sync and subscribe with Firestore for cross-session persistent storage
+    // 2. Cross-session persistence subscription via Firestore
     try {
       subscribeTasksFromFirestore((firestoreTasks) => {
         for (const t of firestoreTasks) {
@@ -50,29 +45,8 @@ class AIAgentClient {
       console.warn('[AIAgentClient] Firestore subscription error:', err);
     }
 
-    // 4. Initial hydration of tasks from server and Firestore
+    // 3. Initial hydration of tasks from server
     void this.fetchTasks();
-  }
-
-  private initSse(): void {
-    try {
-      this.sse = new EventSource('/api/ai/events');
-      this.sse.onmessage = (event) => {
-        try {
-          const parsed = JSON.parse(event.data) as AIAgentEvent;
-          if (parsed && typeof parsed.type === 'string' && parsed.type.startsWith('aiAgent.')) {
-            this.handleEvent(parsed);
-          }
-        } catch {
-          // ignore non-JSON or heartbeat comments
-        }
-      };
-      this.sse.onerror = () => {
-        // SSE reconnects automatically
-      };
-    } catch {
-      // EventSource unavailable or blocked
-    }
   }
 
   on(listener: AIEventListener): () => void {
@@ -113,17 +87,17 @@ class AIAgentClient {
   }
 
   async fetchTasks(): Promise<AgentTask[]> {
-    // 1. Fetch from Firestore for cross-device persistence
+    // 1. Fetch user tasks from Firestore for user-isolated persistence
     try {
       const firestoreTasks = await fetchTasksFromFirestore();
       for (const t of firestoreTasks) {
         this.tasks.set(t.id, t);
       }
     } catch {
-      // ignore offline fallback
+      // offline or unauthenticated fallback
     }
 
-    // 2. Also hydrate from local server
+    // 2. Hydrate from server API endpoint
     try {
       const token = await ensureAnonymousAuth();
       const headers: Record<string, string> = {};
@@ -135,7 +109,6 @@ class AIAgentClient {
         if (Array.isArray(data.tasks)) {
           for (const t of data.tasks) {
             this.tasks.set(t.id, t);
-            void persistTaskToFirestore(t);
           }
           return this.getTasks();
         }
@@ -164,19 +137,7 @@ class AIAgentClient {
 
     const data = (await res.json()) as { taskId: string; status: string };
 
-    // Optimistically track task in client & persist to Firestore
-    const task: AgentTask = {
-      id: data.taskId,
-      title,
-      description,
-      assignedAgentId: agentId,
-      status: 'queued',
-      createdAt: Date.now(),
-      currentStep: 'Queued on server',
-    };
-    this.tasks.set(data.taskId, task);
-    void persistTaskToFirestore(task);
-
+    // Hydrate task state via server response / WebSocket broadcast
     return data;
   }
 
@@ -247,7 +208,6 @@ class AIAgentClient {
             task.currentStep = 'Failed';
             break;
         }
-        void persistTaskToFirestore(task);
       }
     }
 
