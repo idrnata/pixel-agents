@@ -18,6 +18,7 @@ export interface TaskRepository {
   listTasks(userId: string, options?: { limit?: number }): Promise<AgentTask[]>;
   appendTaskEvent(event: TaskEventRecord): Promise<void>;
   getChildTasks(userId: string, parentTaskId: string): Promise<AgentTask[]>;
+  listActiveTasksForRecovery(): Promise<AgentTask[]>;
 }
 
 // ── In-Memory Implementation (For unit tests & offline mode) ─
@@ -64,6 +65,24 @@ export class InMemoryTaskRepository implements TaskRepository {
   async getChildTasks(userId: string, parentTaskId: string): Promise<AgentTask[]> {
     const all = await this.listTasks(userId);
     return all.filter((t) => t.parentTaskId === parentTaskId);
+  }
+
+  async listActiveTasksForRecovery(): Promise<AgentTask[]> {
+    const active: AgentTask[] = [];
+    for (const [, userMap] of this.tasksByUser) {
+      for (const t of userMap.values()) {
+        if (
+          t.status === 'queued' ||
+          t.status === 'planning' ||
+          t.status === 'thinking' ||
+          t.status === 'working' ||
+          t.status === 'waiting'
+        ) {
+          active.push({ ...t });
+        }
+      }
+    }
+    return active;
   }
 }
 
@@ -172,6 +191,26 @@ export class FirebaseTaskRepository implements TaskRepository {
       tasks.push(d.data() as AgentTask);
     }
     return tasks.sort((a, b) => a.createdAt - b.createdAt);
+  }
+
+  async listActiveTasksForRecovery(): Promise<AgentTask[]> {
+    const db = getAdminFirestore();
+    if (!db) return [];
+
+    try {
+      const snap = await db
+        .collectionGroup('tasks')
+        .where('status', 'in', ['queued', 'planning', 'thinking', 'working', 'waiting'])
+        .get();
+
+      const tasks: AgentTask[] = [];
+      for (const d of snap.docs) {
+        tasks.push(d.data() as AgentTask);
+      }
+      return tasks;
+    } catch {
+      return [];
+    }
   }
 }
 

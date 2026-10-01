@@ -189,6 +189,10 @@ class AIAgentClient {
             task.status = 'thinking';
             task.currentStep = event.currentStep || 'Reasoning over directives';
             break;
+          case 'aiAgent.waiting':
+            task.status = 'waiting';
+            task.currentStep = event.currentStep || 'Waiting for team deliverables';
+            break;
           case 'aiAgent.working':
             task.status = 'working';
             task.currentStep = event.currentStep || 'Executing task with Gemini';

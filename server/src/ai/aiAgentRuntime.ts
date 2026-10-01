@@ -29,6 +29,9 @@ export class AiAgentRuntime {
     this.activeTasks.set('manager', null);
     this.activeTasks.set('researcher', null);
     this.activeTasks.set('analyst', null);
+
+    // Automatically recover active orphaned tasks on runtime startup
+    void this.recoverOrphanedTasks();
   }
 
   setBroadcaster(broadcaster: EventBroadcaster): void {
@@ -471,10 +474,20 @@ export class AiAgentRuntime {
     return this.prepareAndWaitForChildren(parentTaskId, () => childTaskIds);
   }
 
-  async recoverOrphanedTasks(userId = 'default-user'): Promise<void> {
+  async recoverOrphanedTasks(specificUserId?: string): Promise<void> {
     try {
-      const persistedTasks = await this.repository.listTasks(userId);
-      for (const t of persistedTasks) {
+      let tasksToRecover: AgentTask[] = [];
+
+      if (specificUserId) {
+        tasksToRecover = await this.repository.listTasks(specificUserId);
+      } else if (typeof this.repository.listActiveTasksForRecovery === 'function') {
+        tasksToRecover = await this.repository.listActiveTasksForRecovery();
+      } else {
+        tasksToRecover = Array.from(this.tasks.values());
+      }
+
+      for (const t of tasksToRecover) {
+        if (!t.userId) continue;
         if (
           t.status === 'queued' ||
           t.status === 'planning' ||
@@ -487,11 +500,25 @@ export class AiAgentRuntime {
           t.completedAt = Date.now();
           t.currentStep = 'Failed (Server Restart)';
           this.tasks.set(t.id, t);
-          await this.repository.updateTask(userId, t.id, {
+
+          await this.repository.updateTask(t.userId, t.id, {
             status: 'failed',
             error: t.error,
             completedAt: t.completedAt,
             currentStep: t.currentStep,
+          });
+
+          await this.repository.appendTaskEvent({
+            id: crypto.randomUUID(),
+            taskId: t.id,
+            userId: t.userId,
+            agentId: t.assignedAgentId,
+            type: 'aiAgent.failed',
+            timestamp: Date.now(),
+            payload: {
+              status: 'failed',
+              error: t.error,
+            },
           });
         }
       }

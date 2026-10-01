@@ -90,7 +90,7 @@ export async function verifyFirebaseIdToken(token: string): Promise<{ uid: strin
 
   const auth = getAdminAuth();
   if (!auth) {
-    return { uid: 'anon-user' };
+    throw new Error('SERVICE_UNAVAILABLE: Firebase authentication service is unavailable.');
   }
 
   try {

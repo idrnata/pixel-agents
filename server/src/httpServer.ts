@@ -352,14 +352,39 @@ function registerWebSocketRoute(app: FastifyInstance, options: HttpServerOptions
     const privileged = options.embedded || standaloneTokenValid(request.raw?.url || request.url, options.token);
 
     let socketUserId: string | null = null;
+
+    const verifySocketToken = async (rawToken: string): Promise<boolean> => {
+      try {
+        const verified = await verifyFirebaseIdToken(rawToken);
+        if (verified && verified.uid) {
+          socketUserId = verified.uid;
+          return true;
+        }
+      } catch {
+        // Token verification failed or service unavailable
+      }
+      return false;
+    };
+
+    // Extract initial token from Bearer header or search params
+    let initialToken: string | undefined;
     const authHeader = request.headers.authorization;
     if (authHeader && authHeader.startsWith('Bearer ')) {
-      const token = authHeader.slice(7).trim();
-      void verifyFirebaseIdToken(token)
-        .then((res) => {
-          socketUserId = res.uid;
-        })
-        .catch(() => {});
+      initialToken = authHeader.slice(7).trim();
+    } else {
+      try {
+        const reqUrl = new URL(request.raw?.url || request.url || '', 'http://localhost');
+        const paramToken = reqUrl.searchParams.get('firebaseToken') || reqUrl.searchParams.get('token');
+        if (paramToken && paramToken !== options.token) {
+          initialToken = paramToken;
+        }
+      } catch {
+        // ignore
+      }
+    }
+
+    if (initialToken) {
+      void verifySocketToken(initialToken);
     }
 
     const { store } = options;
@@ -383,8 +408,9 @@ function registerWebSocketRoute(app: FastifyInstance, options: HttpServerOptions
       // User Isolation for AI events
       if (typeof event.type === 'string' && event.type.startsWith('aiAgent.')) {
         const eventUserId = event.userId as string | undefined;
-        if (socketUserId && eventUserId && socketUserId !== eventUserId) {
-          return; // Do not leak other user's events
+        // Strictly deliver ONLY if socket is authenticated AND socketUserId === eventUserId
+        if (!socketUserId || !eventUserId || socketUserId !== eventUserId) {
+          return; // Drop AI event for unauthenticated or non-matching sockets
         }
       }
       safeSend(socket, event);
@@ -397,6 +423,13 @@ function registerWebSocketRoute(app: FastifyInstance, options: HttpServerOptions
     socket.on('message', (data: Buffer | string) => {
       try {
         const msg = JSON.parse(data.toString()) as Record<string, unknown>;
+
+        // Client WS Auth Message: { type: 'auth', token: '...' }
+        if (msg.type === 'auth' && typeof msg.token === 'string') {
+          void verifySocketToken(msg.token);
+          return;
+        }
+
         if (!options.embedded && msg.type) {
           console.log('[Pixel Agents] WS client message:', msg.type);
         }

@@ -117,7 +117,10 @@ void testConnection();
 
 // ── Firestore Tasks Subscription (Read-Only) ─────────────────
 
+let activeTaskUnsubscribe: (() => void) | null = null;
+
 export async function fetchTasksFromFirestore(): Promise<AgentTask[]> {
+  await ensureAnonymousAuth();
   const userId = auth.currentUser?.uid;
   if (!userId) return [];
   const tasksPath = `users/${userId}/tasks`;
@@ -135,25 +138,41 @@ export async function fetchTasksFromFirestore(): Promise<AgentTask[]> {
 }
 
 export function subscribeTasksFromFirestore(onUpdate: (tasks: AgentTask[]) => void): () => void {
-  const userId = auth.currentUser?.uid;
-  if (!userId) {
-    return () => {};
+  if (activeTaskUnsubscribe) {
+    activeTaskUnsubscribe();
+    activeTaskUnsubscribe = null;
   }
 
-  const tasksPath = `users/${userId}/tasks`;
-  return onSnapshot(
-    collection(db, tasksPath),
-    (snapshot) => {
-      const tasks: AgentTask[] = [];
-      snapshot.forEach((d) => {
-        tasks.push(d.data() as AgentTask);
-      });
-      onUpdate(tasks.sort((a, b) => b.createdAt - a.createdAt));
-    },
-    (error) => {
-      handleFirestoreError(error, OperationType.LIST, tasksPath);
-    },
-  );
+  let cancelled = false;
+
+  void ensureAnonymousAuth().then(() => {
+    if (cancelled) return;
+    const userId = auth.currentUser?.uid;
+    if (!userId) return;
+
+    const tasksPath = `users/${userId}/tasks`;
+    activeTaskUnsubscribe = onSnapshot(
+      collection(db, tasksPath),
+      (snapshot) => {
+        const tasks: AgentTask[] = [];
+        snapshot.forEach((d) => {
+          tasks.push(d.data() as AgentTask);
+        });
+        onUpdate(tasks.sort((a, b) => b.createdAt - a.createdAt));
+      },
+      (error) => {
+        handleFirestoreError(error, OperationType.LIST, tasksPath);
+      },
+    );
+  });
+
+  return () => {
+    cancelled = true;
+    if (activeTaskUnsubscribe) {
+      activeTaskUnsubscribe();
+      activeTaskUnsubscribe = null;
+    }
+  };
 }
 
 // ── Firestore User Settings & Layout Sync ───────────────────

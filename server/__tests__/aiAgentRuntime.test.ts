@@ -568,4 +568,79 @@ describe('AI Agent Runtime & Provider Tests', () => {
     expect(eventTypes).toContain('aiAgent.waiting');
     expect(eventTypes).toContain('aiAgent.completed');
   });
+
+  // 21. Idempotency user isolation: Different users with same key create separate tasks
+  it('21. creates separate tasks when different users submit same idempotencyKey', () => {
+    const runtime = createTestRuntime({});
+    const taskUserA = runtime.createTask('manager', 'Task A', 'Desc', { userId: 'user-A', idempotencyKey: 'shared-key-1' });
+    const taskUserB = runtime.createTask('manager', 'Task B', 'Desc', { userId: 'user-B', idempotencyKey: 'shared-key-1' });
+
+    expect(taskUserA.id).not.toBe(taskUserB.id);
+    expect(taskUserA.userId).toBe('user-A');
+    expect(taskUserB.userId).toBe('user-B');
+  });
+
+  // 22. Automatic runtime recovery on startup
+  it('22. automatically recovers active orphaned tasks on runtime initialization and ignores terminal tasks', async () => {
+    const repo = new InMemoryTaskRepository();
+    const taskWorking: AgentTask = {
+      id: 'active-1',
+      title: 'Active Task',
+      description: 'Running before crash',
+      userId: 'user-X',
+      assignedAgentId: 'researcher',
+      status: 'working',
+      createdAt: Date.now() - 5000,
+    };
+    const taskCompleted: AgentTask = {
+      id: 'done-1',
+      title: 'Completed Task',
+      description: 'Done before crash',
+      userId: 'user-X',
+      assignedAgentId: 'analyst',
+      status: 'completed',
+      result: 'Finished work',
+      createdAt: Date.now() - 10000,
+      completedAt: Date.now() - 9000,
+    };
+
+    await repo.createTask(taskWorking);
+    await repo.createTask(taskCompleted);
+
+    // Instantiating runtime triggers recoverOrphanedTasks automatically in constructor
+    const newRuntime = new AiAgentRuntime(createMockProvider({}), repo);
+
+    await vi.waitFor(async () => {
+      const recoveredWorking = await repo.getTask('user-X', 'active-1');
+      expect(recoveredWorking?.status).toBe('failed');
+      expect(recoveredWorking?.error).toContain('Task execution interrupted by server restart');
+    });
+
+    const keptCompleted = await repo.getTask('user-X', 'done-1');
+    expect(keptCompleted?.status).toBe('completed');
+    expect(keptCompleted?.result).toBe('Finished work');
+  });
+
+  // 23. Recovery idempotency
+  it('23. repeated recovery passes are safe and idempotent', async () => {
+    const repo = new InMemoryTaskRepository();
+    const task: AgentTask = {
+      id: 'task-idemp-rec',
+      title: 'Pending Task',
+      description: 'Pending desc',
+      userId: 'user-Y',
+      assignedAgentId: 'manager',
+      status: 'planning',
+      createdAt: Date.now() - 1000,
+    };
+    await repo.createTask(task);
+
+    const runtime = new AiAgentRuntime(createMockProvider({}), repo);
+    await runtime.recoverOrphanedTasks('user-Y');
+    await runtime.recoverOrphanedTasks('user-Y');
+
+    const recovered = await repo.getTask('user-Y', 'task-idemp-rec');
+    expect(recovered?.status).toBe('failed');
+    expect(recovered?.error).toContain('Task execution interrupted by server restart');
+  });
 });

@@ -21,7 +21,15 @@ export async function extractAndVerifyUserId(
     throw new Error('UNAUTHORIZED');
   }
 
-  return (await verifyFirebaseIdToken(token)).uid;
+  try {
+    return (await verifyFirebaseIdToken(token)).uid;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (msg.includes('SERVICE_UNAVAILABLE')) {
+      throw new Error('SERVICE_UNAVAILABLE');
+    }
+    throw new Error('UNAUTHORIZED');
+  }
 }
 
 export function sendSafeError(res: ServerResponse, statusCode: number, clientMessage: string): void {
