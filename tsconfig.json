@@ -17,7 +17,8 @@
 	"include": [
 		"adapters/vscode",
 		"server/src",
-		"core/src"
+		"core/src",
+		"api"
 	],
 	"exclude": [
 		"node_modules",

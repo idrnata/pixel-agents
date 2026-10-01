@@ -104,7 +104,7 @@
     "asyncapi:generate": "tsx scripts/generate-messages.ts",
     "asyncapi:validate": "node scripts/validate-asyncapi.mjs",
     "check-types": "tsc --noEmit && tsc --noEmit -p server/tsconfig.test.json",
-    "prepare": "husky",
+    "prepare": "husky || true",
     "lint": "eslint adapters/vscode server core && cd webview-ui && eslint .",
     "lint:fix": "eslint adapters/vscode server core --fix && cd webview-ui && eslint . --fix",
     "import-tileset": "tsx scripts/import-tileset-cli.ts",
