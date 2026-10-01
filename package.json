@@ -90,7 +90,7 @@
   },
   "scripts": {
     "dev": "npm run dev --workspace=webview-ui",
-    "build": "npm run build --workspace=webview-ui",
+    "build": "npm run build --workspace=webview-ui && node -e \"const fs=require('fs'); fs.cpSync('dist/webview', 'webview', {recursive: true}); fs.cpSync('dist/webview', 'webview-ui/dist/webview', {recursive: true});\"",
     "vscode:prepublish": "npm run package",
     "vscode:uninstall": "node ./dist/uninstall.js",
     "prepack": "npm run package",
