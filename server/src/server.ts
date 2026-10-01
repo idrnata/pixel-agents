@@ -100,7 +100,7 @@ export class PixelAgentsServer {
       port: options?.port,
       token,
       store: store!,
-      runtime: options?.runtime,
+      runtime: options?.runtime!,
       staticDir: options?.staticDir,
       assetCache: options?.assetCache,
       onHookEvent: (providerId, event) => this.callback?.(providerId, event),

@@ -9,7 +9,6 @@ import type { AgentRuntime } from './agentRuntime.js';
 import type { AgentStateStore } from './agentStateStore.js';
 import {
   aiAgentRuntime,
-  APPLICATION_AGENTS,
   extractAndVerifyUserId,
   getAllApplicationAgents,
 } from './ai/index.js';
@@ -18,14 +17,14 @@ import type {
   ReloadAssetsSideEffect,
   SetHooksEnabledSideEffect,
 } from './clientMessageHandler.js';
-import { handleClientMessage, readHooksConsent } from './clientMessageHandler.js';
+import { handleClientMessage } from './clientMessageHandler.js';
 import {
   HOOK_API_PREFIX,
   MAX_HOOK_BODY_SIZE,
   WS_CLOSE_FORBIDDEN_ORIGIN,
   WS_CLOSE_UNAUTHORIZED,
 } from './constants.js';
-import { verifyFirebaseIdToken } from './firebase/firebaseAdmin.js';
+import { initFirebaseAdmin, verifyFirebaseIdToken } from './firebase/firebaseAdmin.js';
 import type { AgentState } from './types.js';
 
 /** Options for creating the HTTP + WebSocket server. */
@@ -412,7 +411,7 @@ function registerWebSocketRoute(app: FastifyInstance, options: HttpServerOptions
       safeSend(socket, {
         type: 'agentCreated',
         agentId: id,
-        characterId: agent.characterId,
+        characterId: (agent as unknown as { characterId?: number }).characterId,
       });
     };
 

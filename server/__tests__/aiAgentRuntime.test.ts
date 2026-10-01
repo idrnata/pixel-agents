@@ -43,7 +43,7 @@ describe('AI Agent Runtime & Provider Tests', () => {
         result: options.result || `Result deliverable for ${req.task.title}`,
       };
     },
-    async planManagerDelegation(req) {
+    async planManagerDelegation(_req) {
       if (options.delayMs) {
         await new Promise((r) => setTimeout(r, options.delayMs));
       }
@@ -196,6 +196,7 @@ describe('AI Agent Runtime & Provider Tests', () => {
       id: 'test-uuid-1',
       title: 'Analyze Strategy',
       description: 'Review portfolio',
+      userId: 'user-mock',
       assignedAgentId: 'manager',
       status: 'working',
       createdAt: Date.now(),
@@ -610,6 +611,7 @@ describe('AI Agent Runtime & Provider Tests', () => {
 
     // Instantiating runtime triggers recoverOrphanedTasks automatically in constructor
     const newRuntime = new AiAgentRuntime(createMockProvider({}), repo);
+    expect(newRuntime).toBeDefined();
 
     await vi.waitFor(async () => {
       const recoveredWorking = await repo.getTask('user-X', 'active-1');
