@@ -1,0 +1,45 @@
+{
+  "entities": {
+    "Task": {
+      "title": "Task",
+      "description": "An AI agent task executed in INDRA AI OFFICE",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string", "maxLength": 200 },
+        "description": { "type": "string", "maxLength": 5000 },
+        "assignedAgentId": { "type": "string", "enum": ["manager", "researcher", "analyst"] },
+        "status": { "type": "string", "enum": ["queued", "planning", "thinking", "working", "waiting", "completed", "failed"] },
+        "createdAt": { "type": "number" },
+        "startedAt": { "type": "number" },
+        "completedAt": { "type": "number" },
+        "currentStep": { "type": "string", "maxLength": 500 },
+        "result": { "type": "string", "maxLength": 50000 },
+        "summary": { "type": "string", "maxLength": 5000 },
+        "error": { "type": "string", "maxLength": 5000 }
+      },
+      "required": ["id", "title", "assignedAgentId", "status", "createdAt"]
+    },
+    "OfficeSettings": {
+      "title": "OfficeSettings",
+      "description": "Office custom layout and persistent settings",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "layout": { "type": "string", "maxLength": 500000 },
+        "updatedAt": { "type": "number" }
+      },
+      "required": ["id", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "/tasks/{taskId}": {
+      "schema": { "$ref": "#/entities/Task" },
+      "description": "Collection of autonomous AI agent tasks"
+    },
+    "/officeSettings/{settingId}": {
+      "schema": { "$ref": "#/entities/OfficeSettings" },
+      "description": "Virtual office custom layout and state"
+    }
+  }
+}

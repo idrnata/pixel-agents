@@ -85,18 +85,24 @@ export function TasksDrawer({ isOpen, onClose, tasks, onOpenCreate }: TasksDrawe
           ) : (
             tasks.map((t) => {
               const agent = getAssignedAgent(t.assignedAgentId);
+              const isChild = !!t.parentTaskId;
               return (
                 <button
                   key={t.id}
                   onClick={() => setSelectedTaskId(t.id)}
                   className={`text-left p-2.5 border-2 transition-colors flex flex-col gap-1 min-h-[44px] ${
+                    isChild ? 'ml-2.5 border-l-4 border-l-accent/80' : ''
+                  } ${
                     selectedTask?.id === t.id
                       ? 'bg-accent/20 border-accent'
                       : 'bg-bg-dark border-border hover:bg-btn-hover'
                   }`}
                 >
                   <div className="flex items-center justify-between gap-1">
-                    <span className="font-bold truncate text-xs text-text">{t.title}</span>
+                    <span className="font-bold truncate text-xs text-text flex items-center gap-1">
+                      {isChild && <span className="text-accent text-[10px]">↳</span>}
+                      <span className="truncate">{t.title}</span>
+                    </span>
                     {getStatusBadge(t.status)}
                   </div>
                   <div className="flex items-center justify-between text-[11px] text-text-muted">
@@ -278,6 +284,47 @@ export function TasksDrawer({ isOpen, onClose, tasks, onOpenCreate }: TasksDrawe
                   </div>
                 )}
               </div>
+
+              {/* Delegated Child Tasks (Phase 3 Orchestration) */}
+              {tasks.filter((t) => t.parentTaskId === selectedTask.id).length > 0 && (
+                <div className="flex flex-col gap-2 bg-bg-dark p-3.5 border-2 border-border">
+                  <div className="flex items-center justify-between pb-1 border-b border-border">
+                    <h4 className="text-xs font-bold text-accent-bright uppercase flex items-center gap-1.5">
+                      <span>🔀</span>
+                      <span>Delegated Team Tasks</span>
+                    </h4>
+                    <span className="text-[10px] text-text-muted">
+                      {tasks.filter((t) => t.parentTaskId === selectedTask.id).length} subtasks
+                    </span>
+                  </div>
+
+                  <div className="flex flex-col gap-1.5 mt-1">
+                    {tasks
+                      .filter((t) => t.parentTaskId === selectedTask.id)
+                      .map((ct) => {
+                        const cAgent = getAssignedAgent(ct.assignedAgentId);
+                        return (
+                          <div
+                            key={ct.id}
+                            onClick={() => setSelectedTaskId(ct.id)}
+                            className="p-2.5 bg-bg border border-border flex flex-col gap-1 cursor-pointer hover:border-accent transition-colors"
+                          >
+                            <div className="flex items-center justify-between gap-1">
+                              <span className="font-bold text-xs text-text flex items-center gap-1.5">
+                                <span>{cAgent?.avatar}</span>
+                                <span>{ct.title}</span>
+                              </span>
+                              {getStatusBadge(ct.status)}
+                            </div>
+                            <span className="text-[11px] text-text-muted truncate">
+                              {ct.currentStep || ct.description}
+                            </span>
+                          </div>
+                        );
+                      })}
+                  </div>
+                </div>
+              )}
 
               {/* Task Result (Completed) */}
               {selectedTask.status === 'completed' && selectedTask.result && (

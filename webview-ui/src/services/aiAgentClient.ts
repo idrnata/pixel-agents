@@ -5,6 +5,12 @@ import {
   type ApplicationAgent,
 } from '../../../core/src/index.js';
 import { transport } from '../transport/index.js';
+import {
+  ensureAnonymousAuth,
+  fetchTasksFromFirestore,
+  persistTaskToFirestore,
+  subscribeTasksFromFirestore,
+} from './firebase.js';
 
 export type AIEventListener = (event: AIAgentEvent) => void;
 
@@ -33,7 +39,18 @@ class AIAgentClient {
     // 2. Also connect SSE as backup for environments without raw WebSocket routing
     this.initSse();
 
-    // 3. Initial hydration of tasks from server
+    // 3. Sync and subscribe with Firestore for cross-session persistent storage
+    try {
+      subscribeTasksFromFirestore((firestoreTasks) => {
+        for (const t of firestoreTasks) {
+          this.tasks.set(t.id, t);
+        }
+      });
+    } catch (err) {
+      console.warn('[AIAgentClient] Firestore subscription error:', err);
+    }
+
+    // 4. Initial hydration of tasks from server and Firestore
     void this.fetchTasks();
   }
 
@@ -96,13 +113,29 @@ class AIAgentClient {
   }
 
   async fetchTasks(): Promise<AgentTask[]> {
+    // 1. Fetch from Firestore for cross-device persistence
     try {
-      const res = await fetch('/api/ai/tasks');
+      const firestoreTasks = await fetchTasksFromFirestore();
+      for (const t of firestoreTasks) {
+        this.tasks.set(t.id, t);
+      }
+    } catch {
+      // ignore offline fallback
+    }
+
+    // 2. Also hydrate from local server
+    try {
+      const token = await ensureAnonymousAuth();
+      const headers: Record<string, string> = {};
+      if (token) headers['Authorization'] = `Bearer ${token}`;
+
+      const res = await fetch('/api/ai/tasks', { headers });
       if (res.ok) {
         const data = (await res.json()) as { tasks: AgentTask[] };
         if (Array.isArray(data.tasks)) {
           for (const t of data.tasks) {
             this.tasks.set(t.id, t);
+            void persistTaskToFirestore(t);
           }
           return this.getTasks();
         }
@@ -114,9 +147,13 @@ class AIAgentClient {
   }
 
   async createTask(agentId: string, title: string, description: string): Promise<{ taskId: string; status: string }> {
+    const token = await ensureAnonymousAuth();
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+
     const res = await fetch('/api/ai/tasks', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       body: JSON.stringify({ agentId, title, description }),
     });
 
@@ -127,26 +164,30 @@ class AIAgentClient {
 
     const data = (await res.json()) as { taskId: string; status: string };
 
-    // Optimistically track task in client
-    if (!this.tasks.has(data.taskId)) {
-      this.tasks.set(data.taskId, {
-        id: data.taskId,
-        title,
-        description,
-        assignedAgentId: agentId,
-        status: 'queued',
-        createdAt: Date.now(),
-        currentStep: 'Queued on server',
-      });
-    }
+    // Optimistically track task in client & persist to Firestore
+    const task: AgentTask = {
+      id: data.taskId,
+      title,
+      description,
+      assignedAgentId: agentId,
+      status: 'queued',
+      createdAt: Date.now(),
+      currentStep: 'Queued on server',
+    };
+    this.tasks.set(data.taskId, task);
+    void persistTaskToFirestore(task);
 
     return data;
   }
 
   async chat(agentId: string, message: string): Promise<string> {
+    const token = await ensureAnonymousAuth();
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+
     const res = await fetch('/api/ai/chat', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       body: JSON.stringify({ agentId, message }),
     });
 
@@ -206,6 +247,7 @@ class AIAgentClient {
             task.currentStep = 'Failed';
             break;
         }
+        void persistTaskToFirestore(task);
       }
     }
 

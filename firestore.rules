@@ -1,0 +1,49 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidTask(data) {
+      return data.id is string && data.id.size() <= 128 &&
+             data.title is string && data.title.size() > 0 && data.title.size() <= 200 &&
+             data.assignedAgentId is string && (data.assignedAgentId == 'manager' || data.assignedAgentId == 'researcher' || data.assignedAgentId == 'analyst') &&
+             data.status is string && (data.status == 'queued' || data.status == 'planning' || data.status == 'thinking' || data.status == 'working' || data.status == 'waiting' || data.status == 'completed' || data.status == 'failed') &&
+             data.createdAt is number;
+    }
+
+    function isValidOfficeSettings(data) {
+      return data.id is string && data.id.size() <= 128 &&
+             data.updatedAt is number;
+    }
+
+    // Default deny all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Tasks collection
+    match /tasks/{taskId} {
+      allow read: if isValidId(taskId);
+      allow create: if isValidId(taskId) && isValidTask(incoming());
+      allow update: if isValidId(taskId) && isValidTask(incoming());
+      allow delete: if false;
+    }
+
+    // Office Settings collection
+    match /officeSettings/{settingId} {
+      allow read: if isValidId(settingId);
+      allow write: if isValidId(settingId) && isValidOfficeSettings(incoming());
+    }
+  }
+}

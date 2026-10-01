@@ -24,6 +24,7 @@ import {
   WS_CLOSE_FORBIDDEN_ORIGIN,
   WS_CLOSE_UNAUTHORIZED,
 } from './constants.js';
+import { verifyFirebaseIdToken } from './firebase/firebaseAdmin.js';
 import type { AgentState } from './types.js';
 
 /** Options for creating the HTTP + WebSocket server. */
@@ -122,6 +123,20 @@ function registerHealthRoute(app: FastifyInstance): void {
 
 // ── Application AI Agents ───────────────────────────────────────
 
+async function extractUserIdFromRequest(request: FastifyRequest): Promise<string> {
+  const authHeader = request.headers.authorization;
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    const token = authHeader.slice(7).trim();
+    try {
+      const verified = await verifyFirebaseIdToken(token);
+      return verified.uid;
+    } catch {
+      // invalid token fallback
+    }
+  }
+  return 'default-user';
+}
+
 function registerAiRoutes(app: FastifyInstance): void {
   // GET /api/ai/agents - list application agents
   app.get('/api/ai/agents', async () => ({
@@ -138,10 +153,42 @@ function registerAiRoutes(app: FastifyInstance): void {
     })),
   }));
 
-  // GET /api/ai/tasks - list all tasks
-  app.get('/api/ai/tasks', async () => ({
-    tasks: aiAgentRuntime.getTasks(),
-  }));
+  // GET /api/ai/tasks - list all tasks for authenticated user
+  app.get('/api/ai/tasks', async (request) => {
+    const userId = await extractUserIdFromRequest(request);
+    const repoTasks = await aiAgentRuntime.getRepository().listTasks(userId);
+    if (repoTasks.length > 0) {
+      return { tasks: repoTasks };
+    }
+    return {
+      tasks: aiAgentRuntime.getTasks().filter((t) => !t.userId || t.userId === userId || userId === 'default-user'),
+    };
+  });
+
+  // GET /api/ai/tasks/:taskId - get single task
+  app.get<{
+    Params: { taskId: string };
+  }>('/api/ai/tasks/:taskId', async (request, reply) => {
+    const { taskId } = request.params;
+    const userId = await extractUserIdFromRequest(request);
+    const task = (await aiAgentRuntime.getRepository().getTask(userId, taskId)) || aiAgentRuntime.getTask(taskId);
+    if (!task) {
+      reply.status(404).send({ error: `Task "${taskId}" not found.` });
+      return;
+    }
+    reply.send({ task });
+  });
+
+  // GET /api/ai/tasks/:taskId/children - get child tasks
+  app.get<{
+    Params: { taskId: string };
+  }>('/api/ai/tasks/:taskId/children', async (request) => {
+    const { taskId } = request.params;
+    const userId = await extractUserIdFromRequest(request);
+    const children =
+      (await aiAgentRuntime.getRepository().getChildTasks(userId, taskId)) || aiAgentRuntime.getChildTasks(taskId);
+    return { children };
+  });
 
   // POST /api/ai/tasks - create and asynchronously execute task
   app.post<{
@@ -149,9 +196,10 @@ function registerAiRoutes(app: FastifyInstance): void {
       agentId?: string;
       title?: string;
       description?: string;
+      parentTaskId?: string | null;
     };
   }>('/api/ai/tasks', async (request, reply) => {
-    const { agentId, title, description } = request.body || {};
+    const { agentId, title, description, parentTaskId } = request.body || {};
 
     if (!agentId) {
       reply.status(400).send({ error: 'Missing "agentId" field.' });
@@ -166,8 +214,13 @@ function registerAiRoutes(app: FastifyInstance): void {
       return;
     }
 
+    const userId = await extractUserIdFromRequest(request);
+
     try {
-      const task = aiAgentRuntime.createTask(agentId, title, description);
+      const task = aiAgentRuntime.createTask(agentId, title, description, {
+        userId,
+        parentTaskId: parentTaskId || null,
+      });
       reply.status(201).send({
         taskId: task.id,
         status: task.status,

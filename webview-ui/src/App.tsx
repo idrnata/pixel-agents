@@ -32,6 +32,7 @@ import { getPetCount } from './office/sprites/petSpriteData.js';
 import { EditTool, type OfficeLayout } from './office/types.js';
 import { isBrowserRuntime, isE2E } from './runtime.js';
 import { aiAgentClient } from './services/aiAgentClient.js';
+import { fetchLayoutFromFirestore, persistLayoutToFirestore } from './services/firebase.js';
 import { installTestHooks } from './testHooks.js';
 import { transport } from './transport/index.js';
 
@@ -81,6 +82,23 @@ function App() {
     }, 400);
 
     return () => clearTimeout(timer);
+  }, []);
+
+  // Hydrate custom layout from Firestore if present
+  useEffect(() => {
+    void fetchLayoutFromFirestore().then((stored) => {
+      if (stored) {
+        try {
+          const parsed = JSON.parse(stored) as OfficeLayout;
+          if (parsed && typeof parsed.cols === 'number') {
+            migrateLayoutColors(parsed);
+            getOfficeState().rebuildFromLayout(parsed);
+          }
+        } catch {
+          // ignore parsing error
+        }
+      }
+    });
   }, []);
 
   // Listen to Server AI Agent execution events and update OfficeState & tasks
@@ -294,6 +312,7 @@ function App() {
         editor.setLastSavedLayout(layout);
         editor.markClean();
         transport.send({ type: 'saveLayout', layout });
+        void persistLayoutToFirestore(JSON.stringify(layout));
       } catch (err) {
         console.error('Failed to parse layout file:', err);
       }
