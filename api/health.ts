@@ -1,5 +1,8 @@
 import type { IncomingMessage, ServerResponse } from 'http';
 
+import { getAllApplicationAgents } from '../core/src/ai/agentDefinitions.js';
+import { initFirebaseAdmin } from '../server/src/firebase/firebaseAdmin.js';
+
 export default function handler(req: IncomingMessage, res: ServerResponse): void {
   res.writeHead(200, {
     'Content-Type': 'application/json',
@@ -11,6 +14,8 @@ export default function handler(req: IncomingMessage, res: ServerResponse): void
       service: 'INDRA AI OFFICE',
       environment: 'vercel',
       geminiConfigured: !!process.env.GEMINI_API_KEY,
+      firebaseConfigured: initFirebaseAdmin(),
+      applicationAgents: getAllApplicationAgents().map((a) => a.id),
       timestamp: Date.now(),
     }),
   );

@@ -401,4 +401,171 @@ describe('AI Agent Runtime & Provider Tests', () => {
       expect(agent.capabilities.length).toBeGreaterThan(0);
     }
   });
+
+  // 16. Race Condition Regression: Immediate child completion must not hang Manager in waiting
+  it('16. resolves Manager waiting state cleanly even if child tasks complete immediately', async () => {
+    const runtime = createTestRuntime({
+      planMode: 'delegate',
+      planDelegations: [
+        { agentId: 'researcher', title: 'Fast Research', instruction: 'Instant fact check' },
+        { agentId: 'analyst', title: 'Fast Quant', instruction: 'Instant quant check' },
+      ],
+      delayMs: 0, // Children complete immediately with 0 delay
+    });
+
+    const managerTask = runtime.createTask('manager', 'Fast Objective', 'Directives for immediate children');
+
+    await vi.waitFor(
+      () => {
+        expect(managerTask.status).toBe('completed');
+      },
+      { timeout: 3000 },
+    );
+
+    expect(managerTask.result).toBeTruthy();
+    expect(managerTask.status).toBe('completed');
+  });
+
+  // 17. Child Failure Handling: Child failure passes actual failure status & error to Manager without fake success
+  it('17. Manager receives actual child failure status and incorporates error without pretending success', async () => {
+    let callCount = 0;
+    const customProvider: AIAgentProvider = {
+      id: 'mock-failing-provider',
+      displayName: 'Mock Failing Provider',
+      async executeTask(req) {
+        callCount++;
+        if (req.agent.id === 'analyst') {
+          throw new Error('Analyst model computation error');
+        }
+        return {
+          summary: 'Researcher report',
+          steps: [{ name: 'Research', description: 'Gathered data', status: 'completed' }],
+          result: 'Researcher findings on crypto facts',
+        };
+      },
+      async planManagerDelegation() {
+        return {
+          mode: 'delegate',
+          reason: 'Delegating to team',
+          delegations: [
+            { agentId: 'researcher', title: 'Fact Gathering', instruction: 'Gather facts' },
+            { agentId: 'analyst', title: 'Risk Modeling', instruction: 'Calculate risks' },
+          ],
+        };
+      },
+      async synthesizeManagerResults(req) {
+        const analystResult = req.childResults.find((c) => c.agentId === 'analyst');
+        expect(analystResult?.status).toBe('failed');
+        expect(analystResult?.error).toContain('Analyst model computation error');
+        return {
+          summary: 'Executive report noting team failure',
+          steps: [{ name: 'Review', description: 'Evaluated team results', status: 'completed' }],
+          result: `Executive Synthesis: Researcher succeeded, Analyst failed with error (${analystResult?.error})`,
+        };
+      },
+      async chat() {
+        return { reply: 'ok' };
+      },
+    };
+
+    const runtime = new AiAgentRuntime(customProvider, new InMemoryTaskRepository());
+    const managerTask = runtime.createTask('manager', 'Objective with Failing Child', 'Directives');
+
+    await vi.waitFor(
+      () => {
+        expect(managerTask.status).toBe('completed');
+      },
+      { timeout: 3000 },
+    );
+
+    expect(managerTask.result).toContain('Analyst failed with error');
+    expect(callCount).toBeGreaterThanOrEqual(2);
+  });
+
+  // 18. API Idempotency: Duplicate submissions with same idempotencyKey return existing task
+  it('18. returns existing task when duplicate submission uses same idempotencyKey', () => {
+    const runtime = createTestRuntime({});
+    const options = { userId: 'user-123', idempotencyKey: 'idempotent-key-999' };
+
+    const task1 = runtime.createTask('manager', 'Unique Title', 'Unique Description', options);
+    const task2 = runtime.createTask('manager', 'Unique Title', 'Unique Description', options);
+
+    expect(task1.id).toBe(task2.id);
+    expect(runtime.getTasks()).toHaveLength(1);
+  });
+
+  // 19. Server Restart Recovery: Orphaned non-terminal tasks marked as failed with server restart error
+  it('19. recoverOrphanedTasks marks non-terminal persisted tasks as failed', async () => {
+    const repo = new InMemoryTaskRepository();
+    const activeTask: AgentTask = {
+      id: 'interrupted-task-1',
+      title: 'Interrupted Task',
+      description: 'Running before crash',
+      userId: 'user-777',
+      assignedAgentId: 'researcher',
+      status: 'working',
+      createdAt: Date.now() - 5000,
+      startedAt: Date.now() - 4000,
+    };
+    await repo.createTask(activeTask);
+
+    const runtime = new AiAgentRuntime(createMockProvider({}), repo);
+    await runtime.recoverOrphanedTasks('user-777');
+
+    const recovered = await repo.getTask('user-777', 'interrupted-task-1');
+    expect(recovered?.status).toBe('failed');
+    expect(recovered?.error).toContain('Task execution interrupted by server restart');
+  });
+
+  // 20. End-to-End Acceptance Test: Bitcoin long-term portfolio analysis
+  it('20. End-to-End Acceptance Test: Manager receives Bitcoin objective, delegates, waits, and synthesizes final report', async () => {
+    const events: AIAgentEvent[] = [];
+    const runtime = createTestRuntime({
+      planMode: 'delegate',
+      planDelegations: [
+        { agentId: 'researcher', title: 'Bitcoin Fundamental Research', instruction: 'Identify facts and assumptions' },
+        { agentId: 'analyst', title: 'Bitcoin Risk & Volatility Analysis', instruction: 'Evaluate retail investor risks' },
+      ],
+      result: 'Verified deliverable output',
+      delayMs: 15,
+    });
+
+    runtime.setBroadcaster((evt) => events.push(evt));
+
+    const task = runtime.createTask(
+      'manager',
+      'Analyze Bitcoin as a long-term portfolio asset',
+      'Analyze Bitcoin as a long-term portfolio asset. Separate factual information from assumptions and identify important risks and considerations for a retail investor.',
+      { userId: 'test-e2e-user' },
+    );
+
+    expect(task.status).toBe('queued');
+    expect(task.userId).toBe('test-e2e-user');
+
+    await vi.waitFor(
+      () => {
+        expect(task.status).toBe('completed');
+      },
+      { timeout: 4000 },
+    );
+
+    expect(task.result).toContain('Master report based on verified inputs');
+    expect(task.result).toContain('researcher: Verified deliverable output');
+    expect(task.result).toContain('analyst: Verified deliverable output');
+
+    const children = runtime.getChildTasks(task.id);
+    expect(children).toHaveLength(2);
+    expect(children[0].userId).toBe('test-e2e-user');
+    expect(children[1].userId).toBe('test-e2e-user');
+    expect(children[0].status).toBe('completed');
+    expect(children[1].status).toBe('completed');
+
+    const eventTypes = events.map((e) => e.type);
+    expect(eventTypes).toContain('aiAgent.taskCreated');
+    expect(eventTypes).toContain('aiAgent.planning');
+    expect(eventTypes).toContain('aiAgent.thinking');
+    expect(eventTypes).toContain('aiAgent.delegated');
+    expect(eventTypes).toContain('aiAgent.waiting');
+    expect(eventTypes).toContain('aiAgent.completed');
+  });
 });

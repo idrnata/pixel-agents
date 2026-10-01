@@ -108,15 +108,24 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Http
 // ── Health ──────────────────────────────────────────────────────
 
 function registerHealthRoute(app: FastifyInstance): void {
-  app.get('/api/health', async () => ({
-    status: 'ok',
-    service: 'INDRA AI OFFICE',
-    uptime: Math.floor((Date.now() - startTime) / 1000),
-    pid: process.pid,
-    geminiConfigured: true,
-    firebaseConfigured: true,
-    applicationAgents: getAllApplicationAgents().map((a) => a.id),
-  }));
+  app.get('/api/health', async () => {
+    let firebaseConfigured = false;
+    try {
+      firebaseConfigured = initFirebaseAdmin();
+    } catch {
+      firebaseConfigured = false;
+    }
+
+    return {
+      status: 'ok',
+      service: 'INDRA AI OFFICE',
+      uptime: Math.floor((Date.now() - startTime) / 1000),
+      pid: process.pid,
+      geminiConfigured: !!process.env.GEMINI_API_KEY,
+      firebaseConfigured,
+      applicationAgents: getAllApplicationAgents().map((a) => a.id),
+    };
+  });
 }
 
 // ── Application AI Agents ───────────────────────────────────────
@@ -244,9 +253,14 @@ function registerAiRoutes(app: FastifyInstance): void {
     }
 
     try {
+      const idempotencyKey =
+        (request.headers['idempotency-key'] as string | undefined) ||
+        (request.headers['x-idempotency-key'] as string | undefined);
+
       const task = aiAgentRuntime.createTask(agentId, title, description, {
         userId,
         parentTaskId: parentTaskId || null,
+        idempotencyKey,
       });
       reply.status(201).send({
         taskId: task.id,

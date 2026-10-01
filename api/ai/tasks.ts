@@ -77,9 +77,14 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
         }
       }
 
+      const idempotencyKey =
+        (req.headers['idempotency-key'] as string | undefined) ||
+        (req.headers['x-idempotency-key'] as string | undefined);
+
       const task = aiAgentRuntime.createTask(body.agentId, body.title, body.description, {
         userId,
         parentTaskId: body.parentTaskId || null,
+        idempotencyKey,
       });
 
       res.writeHead(201, { 'Content-Type': 'application/json' });

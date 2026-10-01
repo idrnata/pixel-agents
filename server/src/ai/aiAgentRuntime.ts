@@ -15,6 +15,7 @@ export class AiAgentRuntime {
   private readonly queues = new Map<string, AgentTask[]>();
   private readonly activeTasks = new Map<string, string | null>();
   private readonly childCompletionResolvers = new Map<string, () => void>();
+  private readonly idempotencyKeys = new Map<string, AgentTask>();
   private broadcaster: EventBroadcaster | null = null;
   private readonly provider: AIAgentProvider;
   private readonly repository: TaskRepository;
@@ -69,8 +70,20 @@ export class AiAgentRuntime {
       userId?: string;
       parentTaskId?: string | null;
       metadata?: Record<string, unknown>;
+      idempotencyKey?: string | null;
     },
   ): AgentTask {
+    const userId = options?.userId || 'default-user';
+    const idempotencyKey = options?.idempotencyKey?.trim();
+
+    if (idempotencyKey) {
+      const compositeKey = `${userId}:${idempotencyKey}`;
+      const existing = this.idempotencyKeys.get(compositeKey);
+      if (existing) {
+        return existing;
+      }
+    }
+
     // 1. Validate agentId
     const agent = getApplicationAgent(agentId);
     if (!agent) {
@@ -96,7 +109,6 @@ export class AiAgentRuntime {
     }
 
     // 4. Create task object
-    const userId = options?.userId || 'default-user';
     const parentTaskId = options?.parentTaskId || null;
 
     const task: AgentTask = {
@@ -113,6 +125,11 @@ export class AiAgentRuntime {
     };
 
     this.tasks.set(task.id, task);
+
+    if (idempotencyKey) {
+      const compositeKey = `${userId}:${idempotencyKey}`;
+      this.idempotencyKeys.set(compositeKey, task);
+    }
 
     // 5. Persist to Firestore / TaskRepository
     void this.repository.createTask(task).catch((err) => {
@@ -303,8 +320,11 @@ export class AiAgentRuntime {
           reason: plan.reason,
         });
 
-        // Create child tasks in runtime and repository
+        // Register listener BEFORE child tasks are created to prevent race condition
         const childTaskIds: string[] = [];
+        const waitPromise = this.prepareAndWaitForChildren(task.id, () => childTaskIds);
+
+        // Create child tasks in runtime and repository
         for (const item of validDelegations) {
           const child = this.createTask(item.agentId, item.title, item.instruction, {
             userId: task.userId,
@@ -331,7 +351,7 @@ export class AiAgentRuntime {
         });
 
         // Wait for all child tasks to reach terminal state
-        await this.waitForChildrenCompletion(task.id, childTaskIds);
+        await waitPromise;
 
         // Children complete -> Manager returns to THINKING then WORKING
         task.status = 'thinking';
@@ -404,25 +424,80 @@ export class AiAgentRuntime {
     }
   }
 
-  private waitForChildrenCompletion(parentTaskId: string, childTaskIds: string[]): Promise<void> {
+  private prepareAndWaitForChildren(
+    parentTaskId: string,
+    getChildIds: () => string[],
+  ): Promise<void> {
     return new Promise((resolve) => {
+      let resolved = false;
+
       const checkDone = () => {
+        if (resolved) return;
+        const childTaskIds = getChildIds();
+        if (childTaskIds.length === 0) return;
+
         const allDone = childTaskIds.every((id) => {
           const t = this.tasks.get(id);
           return t && (t.status === 'completed' || t.status === 'failed');
         });
+
         if (allDone) {
+          resolved = true;
           this.childCompletionResolvers.delete(parentTaskId);
+          if (timeoutId) clearTimeout(timeoutId);
           resolve();
         }
       };
 
-      // Check immediately
-      checkDone();
-
-      // Register listener for child updates
+      // Register listener BEFORE child completion can occur
       this.childCompletionResolvers.set(parentTaskId, checkDone);
+
+      // Safety net: 2 minute max wait to prevent permanent hanging
+      const timeoutId = setTimeout(() => {
+        if (!resolved) {
+          resolved = true;
+          this.childCompletionResolvers.delete(parentTaskId);
+          console.warn(`[AiAgentRuntime] Timeout waiting for child tasks of parent "${parentTaskId}"`);
+          resolve();
+        }
+      }, 120_000);
+
+      // Initial check in case all children are already done
+      checkDone();
     });
+  }
+
+  waitForChildrenCompletion(parentTaskId: string, childTaskIds: string[]): Promise<void> {
+    return this.prepareAndWaitForChildren(parentTaskId, () => childTaskIds);
+  }
+
+  async recoverOrphanedTasks(userId = 'default-user'): Promise<void> {
+    try {
+      const persistedTasks = await this.repository.listTasks(userId);
+      for (const t of persistedTasks) {
+        if (
+          t.status === 'queued' ||
+          t.status === 'planning' ||
+          t.status === 'thinking' ||
+          t.status === 'working' ||
+          t.status === 'waiting'
+        ) {
+          t.status = 'failed';
+          t.error = 'Task execution interrupted by server restart.';
+          t.completedAt = Date.now();
+          t.currentStep = 'Failed (Server Restart)';
+          this.tasks.set(t.id, t);
+          await this.repository.updateTask(userId, t.id, {
+            status: 'failed',
+            error: t.error,
+            completedAt: t.completedAt,
+            currentStep: t.currentStep,
+          });
+        }
+      }
+    } catch (err) {
+      console.warn('[AiAgentRuntime] Error recovering orphaned tasks:', err);
+    }
   }
 
   private async finalizeTask(task: AgentTask, finalStatus: 'completed' | 'failed'): Promise<void> {

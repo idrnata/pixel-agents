@@ -125,6 +125,11 @@ function App() {
         office.sendToSeat(charId);
         office.setAgentActive(charId, true);
         office.showWaitingBubble(charId);
+      } else if (event.type === 'aiAgent.waiting') {
+        office.sendToSeat(charId);
+        office.setAgentActive(charId, true);
+        office.showWaitingBubble(charId);
+        office.setAgentTool(charId, null);
       } else if (event.type === 'aiAgent.working') {
         office.sendToSeat(charId);
         office.setAgentActive(charId, true);
