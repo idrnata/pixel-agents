@@ -17,7 +17,7 @@ export interface AgentTask {
   id: string;
   title: string;
   description: string;
-  userId?: string;
+  userId: string;
   assignedAgentId: string;
   parentTaskId?: string | null;
   status: AgentTaskStatus;
@@ -51,7 +51,7 @@ export type AIAgentEvent =
       type: 'aiAgent.taskCreated';
       taskId: string;
       agentId: string;
-      userId?: string;
+      userId: string;
       parentTaskId?: string | null;
       task?: AgentTask;
     }
@@ -59,21 +59,21 @@ export type AIAgentEvent =
       type: 'aiAgent.planning';
       taskId: string;
       agentId: string;
-      userId?: string;
+      userId: string;
       currentStep?: string;
     }
   | {
       type: 'aiAgent.thinking';
       taskId: string;
       agentId: string;
-      userId?: string;
+      userId: string;
       currentStep?: string;
     }
   | {
       type: 'aiAgent.delegated';
       taskId: string;
       agentId: string;
-      userId?: string;
+      userId: string;
       delegations: DelegationItem[];
       reason: string;
     }
@@ -81,7 +81,7 @@ export type AIAgentEvent =
       type: 'aiAgent.waiting';
       taskId: string;
       agentId: string;
-      userId?: string;
+      userId: string;
       waitingForTaskIds: string[];
       currentStep?: string;
     }
@@ -89,7 +89,7 @@ export type AIAgentEvent =
       type: 'aiAgent.working';
       taskId: string;
       agentId: string;
-      userId?: string;
+      userId: string;
       toolName?: string;
       description?: string;
       currentStep?: string;
@@ -98,7 +98,7 @@ export type AIAgentEvent =
       type: 'aiAgent.completed';
       taskId: string;
       agentId: string;
-      userId?: string;
+      userId: string;
       parentTaskId?: string | null;
       result: string;
       summary?: string;
@@ -108,7 +108,7 @@ export type AIAgentEvent =
       type: 'aiAgent.failed';
       taskId: string;
       agentId: string;
-      userId?: string;
+      userId: string;
       parentTaskId?: string | null;
       error: string;
     };

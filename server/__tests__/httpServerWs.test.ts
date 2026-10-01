@@ -465,3 +465,203 @@ describe('/ws privileged-message gate', () => {
     expect(readHooksConsent()).toBe(true);
   });
 });
+
+describe('WebSocket User Isolation & Auth Lifecycle', () => {
+  let server: InstanceType<typeof PixelAgentsServer>;
+  let store: InstanceType<typeof AgentStateStore>;
+  const sockets: WebSocket[] = [];
+
+  beforeEach(async () => {
+    tmpBase = fs.mkdtempSync(path.join(os.tmpdir(), 'pxl-ws-auth-test-'));
+    fs.mkdirSync(path.join(tmpBase, '.pixel-agents', 'servers'), { recursive: true });
+    server = new PixelAgentsServer();
+    store = new AgentStateStore();
+  });
+
+  afterEach(() => {
+    for (const socket of sockets) socket.terminate();
+    sockets.length = 0;
+    server?.stop();
+    try {
+      fs.rmSync(tmpBase, { recursive: true, force: true });
+    } catch {
+      /* ignore */
+    }
+  });
+
+  async function startServer(): Promise<number> {
+    const config = await server.start({
+      embedded: false,
+      store,
+    });
+    return config.port;
+  }
+
+  function waitForAiEvent(
+    socket: WebSocket,
+    eventType: string,
+    ms = 1000,
+  ): Promise<Record<string, unknown> | null> {
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => resolve(null), ms);
+      const onMsg = (data: Buffer) => {
+        try {
+          const msg = JSON.parse(data.toString()) as Record<string, unknown>;
+          if (msg.type === eventType) {
+            clearTimeout(timer);
+            socket.off('message', onMsg);
+            resolve(msg);
+          }
+        } catch {
+          // ignore
+        }
+      };
+      socket.on('message', onMsg);
+    });
+  }
+
+  // Test 1 — authenticated user receives own AI event
+  it('1. delivers AI events matching authenticated socket user ID', async () => {
+    const port = await startServer();
+    const conn = await connectTo(`ws://127.0.0.1:${port}/ws`, {
+      Authorization: 'Bearer mock-token-user-A',
+      Origin: `http://127.0.0.1:${port}`,
+    });
+    sockets.push(conn.socket);
+
+    const eventPromise = waitForAiEvent(conn.socket, 'aiAgent.working');
+
+    // Give socket time to complete async token verification
+    await new Promise((r) => setTimeout(r, 100));
+
+    store.broadcast({
+      type: 'aiAgent.working',
+      taskId: 'task-100',
+      agentId: 'researcher',
+      userId: 'user-A',
+      currentStep: 'Analyzing market',
+    });
+
+    const received = await eventPromise;
+    expect(received).not.toBeNull();
+    expect(received).toMatchObject({
+      type: 'aiAgent.working',
+      taskId: 'task-100',
+      userId: 'user-A',
+    });
+  });
+
+  // Test 2 — cross-user event blocked
+  it('2. blocks cross-user AI events for non-matching user IDs', async () => {
+    const port = await startServer();
+    const conn = await connectTo(`ws://127.0.0.1:${port}/ws`, {
+      Authorization: 'Bearer mock-token-user-A',
+      Origin: `http://127.0.0.1:${port}`,
+    });
+    sockets.push(conn.socket);
+
+    await new Promise((r) => setTimeout(r, 100));
+
+    const eventPromise = waitForAiEvent(conn.socket, 'aiAgent.working', 500);
+
+    store.broadcast({
+      type: 'aiAgent.working',
+      taskId: 'task-101',
+      agentId: 'analyst',
+      userId: 'user-B', // Cross-user target!
+      currentStep: 'Private calculation',
+    });
+
+    const received = await eventPromise;
+    expect(received).toBeNull(); // Dropped!
+  });
+
+  // Test 3 — unauthenticated socket
+  it('3. blocks all aiAgent.* events on unauthenticated sockets', async () => {
+    const port = await startServer();
+    const conn = await connectTo(`ws://127.0.0.1:${port}/ws`, {
+      Origin: `http://127.0.0.1:${port}`,
+    });
+    sockets.push(conn.socket);
+
+    await new Promise((r) => setTimeout(r, 100));
+
+    const eventPromise = waitForAiEvent(conn.socket, 'aiAgent.working', 500);
+
+    store.broadcast({
+      type: 'aiAgent.working',
+      taskId: 'task-102',
+      agentId: 'manager',
+      userId: 'user-A',
+      currentStep: 'Manager plan',
+    });
+
+    const received = await eventPromise;
+    expect(received).toBeNull(); // Blocked!
+  });
+
+  // Test 4 — invalid Firebase token
+  it('4. rejects invalid Firebase auth tokens and keeps socket unauthenticated', async () => {
+    const port = await startServer();
+    const conn = await connectTo(`ws://127.0.0.1:${port}/ws`, {
+      Origin: `http://127.0.0.1:${port}`,
+    });
+    sockets.push(conn.socket);
+
+    // Send invalid auth token message
+    conn.socket.send(JSON.stringify({ type: 'auth', token: '' }));
+    await new Promise((r) => setTimeout(r, 100));
+
+    const eventPromise = waitForAiEvent(conn.socket, 'aiAgent.working', 500);
+
+    store.broadcast({
+      type: 'aiAgent.working',
+      taskId: 'task-103',
+      agentId: 'researcher',
+      userId: 'user-A',
+    });
+
+    const received = await eventPromise;
+    expect(received).toBeNull();
+  });
+
+  // Test 5 — authentication race regression
+  it('5. prevents AI event delivery while authentication is pending and enables it after auth completes', async () => {
+    const port = await startServer();
+    const conn = await connectTo(`ws://127.0.0.1:${port}/ws`, {
+      Origin: `http://127.0.0.1:${port}`,
+    });
+    sockets.push(conn.socket);
+
+    // Phase A: Before sending auth message, broadcast event
+    const preAuthPromise = waitForAiEvent(conn.socket, 'aiAgent.working', 300);
+    store.broadcast({
+      type: 'aiAgent.working',
+      taskId: 'task-race-1',
+      agentId: 'researcher',
+      userId: 'user-race',
+    });
+    expect(await preAuthPromise).toBeNull(); // Not delivered before auth!
+
+    // Phase B: Send auth message and wait for verification
+    conn.socket.send(JSON.stringify({ type: 'auth', token: 'mock-token-user-race' }));
+    await new Promise((r) => setTimeout(r, 150));
+
+    // Phase C: Broadcast event after successful auth
+    const postAuthPromise = waitForAiEvent(conn.socket, 'aiAgent.working', 1000);
+    store.broadcast({
+      type: 'aiAgent.working',
+      taskId: 'task-race-2',
+      agentId: 'researcher',
+      userId: 'user-race',
+    });
+
+    const received = await postAuthPromise;
+    expect(received).not.toBeNull();
+    expect(received).toMatchObject({
+      type: 'aiAgent.working',
+      taskId: 'task-race-2',
+      userId: 'user-race',
+    });
+  });
+});

@@ -352,16 +352,35 @@ function registerWebSocketRoute(app: FastifyInstance, options: HttpServerOptions
     const privileged = options.embedded || standaloneTokenValid(request.raw?.url || request.url, options.token);
 
     let socketUserId: string | null = null;
+    let aiListenerRegistered = false;
+
+    const onBroadcast = (event: Record<string, unknown>) => {
+      // User Isolation for AI events
+      if (typeof event.type === 'string' && event.type.startsWith('aiAgent.')) {
+        const eventUserId = event.userId as string | undefined;
+        // Layer 2 Defense-in-depth check: deliver ONLY if authenticated AND socketUserId === eventUserId
+        if (!socketUserId || !eventUserId || socketUserId !== eventUserId) {
+          return; // Drop AI event for unauthenticated or non-matching sockets
+        }
+      }
+      safeSend(socket, event);
+    };
 
     const verifySocketToken = async (rawToken: string): Promise<boolean> => {
       try {
         const verified = await verifyFirebaseIdToken(rawToken);
         if (verified && verified.uid) {
           socketUserId = verified.uid;
+
+          // Layer 1: Register AI broadcast listener ONLY after successful token verification
+          if (!aiListenerRegistered) {
+            aiListenerRegistered = true;
+            store.on('broadcast', onBroadcast);
+          }
           return true;
         }
       } catch {
-        // Token verification failed or service unavailable
+        // Token verification failed: preserve previous valid identity if one exists, otherwise keep unauthenticated
       }
       return false;
     };
@@ -404,21 +423,8 @@ function registerWebSocketRoute(app: FastifyInstance, options: HttpServerOptions
       });
     };
 
-    const onBroadcast = (event: Record<string, unknown>) => {
-      // User Isolation for AI events
-      if (typeof event.type === 'string' && event.type.startsWith('aiAgent.')) {
-        const eventUserId = event.userId as string | undefined;
-        // Strictly deliver ONLY if socket is authenticated AND socketUserId === eventUserId
-        if (!socketUserId || !eventUserId || socketUserId !== eventUserId) {
-          return; // Drop AI event for unauthenticated or non-matching sockets
-        }
-      }
-      safeSend(socket, event);
-    };
-
     store.on('agentAdded', onAgentAdded);
     store.on('agentRemoved', onAgentRemoved);
-    store.on('broadcast', onBroadcast);
 
     socket.on('message', (data: Buffer | string) => {
       try {

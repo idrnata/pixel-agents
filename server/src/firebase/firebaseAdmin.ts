@@ -44,14 +44,18 @@ export function initFirebaseAdmin(): boolean {
           privateKey,
         }),
       });
-    } else {
+      isConfigured = true;
+      return true;
+    } else if (process.env.GOOGLE_APPLICATION_CREDENTIALS || process.env.K_SERVICE) {
       initializeApp({
         projectId: configProjectId,
       });
+      isConfigured = true;
+      return true;
+    } else {
+      isConfigured = false;
+      return false;
     }
-
-    isConfigured = true;
-    return true;
   } catch (err) {
     // Graceful offline fallback in development and testing
     isConfigured = false;
@@ -82,8 +86,17 @@ export async function verifyFirebaseIdToken(token: string): Promise<{ uid: strin
     throw new Error('UNAUTHORIZED: Missing or invalid token.');
   }
 
-  // Support dev / mock tokens in test and local environments
+  // Support dev / mock tokens ONLY in test, development, or explicitly enabled environments
   if (token.startsWith('mock-token-') || token === 'test-token' || token.startsWith('dev-token-')) {
+    const isMockAllowed =
+      process.env.NODE_ENV === 'test' ||
+      process.env.NODE_ENV === 'development' ||
+      process.env.ENABLE_MOCK_AUTH === 'true';
+
+    if (!isMockAllowed) {
+      throw new Error('UNAUTHORIZED: Mock authentication tokens are disabled in production.');
+    }
+
     const uid = token.replace('mock-token-', '').replace('dev-token-', '') || 'test-user';
     return { uid };
   }

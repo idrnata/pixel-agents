@@ -172,6 +172,7 @@ class AIAgentClient {
           id: taskId,
           title: 'AI Task',
           description: '',
+          userId: event.userId || '',
           assignedAgentId: event.agentId,
           status: 'queued',
           createdAt: Date.now(),

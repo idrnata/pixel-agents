@@ -28,7 +28,10 @@ export class InMemoryTaskRepository implements TaskRepository {
   private readonly eventsByUser = new Map<string, TaskEventRecord[]>();
 
   async createTask(task: AgentTask): Promise<void> {
-    const userId = task.userId || 'default';
+    const userId = task.userId?.trim();
+    if (!userId) {
+      throw new Error('UNAUTHORIZED: task.userId is required.');
+    }
     if (!this.tasksByUser.has(userId)) {
       this.tasksByUser.set(userId, new Map());
     }
@@ -91,7 +94,10 @@ export class InMemoryTaskRepository implements TaskRepository {
 export class FirebaseTaskRepository implements TaskRepository {
   async createTask(task: AgentTask): Promise<void> {
     const db = getAdminFirestore();
-    const userId = task.userId || 'default';
+    const userId = task.userId?.trim();
+    if (!userId) {
+      throw new Error('UNAUTHORIZED: task.userId is required.');
+    }
     if (!db) return;
 
     const docRef = db.collection('users').doc(userId).collection('tasks').doc(task.id);

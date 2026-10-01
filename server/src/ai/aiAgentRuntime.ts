@@ -76,7 +76,10 @@ export class AiAgentRuntime {
       idempotencyKey?: string | null;
     },
   ): AgentTask {
-    const userId = options?.userId || 'default-user';
+    if (!options?.userId?.trim()) {
+      throw new Error('UNAUTHORIZED: userId is required.');
+    }
+    const userId = options.userId.trim();
     const idempotencyKey = options?.idempotencyKey?.trim();
 
     if (idempotencyKey) {
@@ -234,7 +237,7 @@ export class AiAgentRuntime {
       userId: task.userId,
       currentStep: task.currentStep,
     });
-    void this.repository.updateTask(task.userId || 'default', task.id, {
+    void this.repository.updateTask(task.userId, task.id, {
       status: task.status,
       currentStep: task.currentStep,
       startedAt: task.startedAt,
@@ -255,7 +258,7 @@ export class AiAgentRuntime {
       userId: task.userId,
       currentStep: task.currentStep,
     });
-    void this.repository.updateTask(task.userId || 'default', task.id, {
+    void this.repository.updateTask(task.userId, task.id, {
       status: task.status,
       currentStep: task.currentStep,
     });
@@ -279,7 +282,7 @@ export class AiAgentRuntime {
       description: `Synthesizing ${agent.name} deliverable`,
       currentStep: task.currentStep,
     });
-    void this.repository.updateTask(task.userId || 'default', task.id, {
+    void this.repository.updateTask(task.userId, task.id, {
       status: task.status,
       currentStep: task.currentStep,
     });
@@ -348,7 +351,7 @@ export class AiAgentRuntime {
           waitingForTaskIds: childTaskIds,
           currentStep: task.currentStep,
         });
-        void this.repository.updateTask(task.userId || 'default', task.id, {
+        void this.repository.updateTask(task.userId, task.id, {
           status: 'waiting',
           currentStep: task.currentStep,
         });
@@ -556,7 +559,7 @@ export class AiAgentRuntime {
     }
 
     // Persist to repository
-    void this.repository.updateTask(task.userId || 'default', task.id, {
+    void this.repository.updateTask(task.userId, task.id, {
       status: task.status,
       completedAt: task.completedAt,
       currentStep: task.currentStep,
@@ -569,7 +572,7 @@ export class AiAgentRuntime {
     void this.repository.appendTaskEvent({
       id: crypto.randomUUID(),
       taskId: task.id,
-      userId: task.userId || 'default',
+      userId: task.userId,
       agentId: task.assignedAgentId,
       type: finalStatus === 'completed' ? 'aiAgent.completed' : 'aiAgent.failed',
       timestamp: Date.now(),

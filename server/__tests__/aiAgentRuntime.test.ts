@@ -81,7 +81,7 @@ describe('AI Agent Runtime & Provider Tests', () => {
   it('1. rejects unknown agent ID', () => {
     const runtime = createTestRuntime({});
     expect(() => {
-      runtime.createTask('unknown_bot', 'Valid title', 'Valid description');
+      runtime.createTask('unknown_bot', 'Valid title', 'Valid description', { userId: 'test-user' });
     }).toThrow(/Unknown agent ID "unknown_bot"/);
   });
 
@@ -89,7 +89,7 @@ describe('AI Agent Runtime & Provider Tests', () => {
   it('2. rejects missing or empty title', () => {
     const runtime = createTestRuntime({});
     expect(() => {
-      runtime.createTask('researcher', '   ', 'Valid description');
+      runtime.createTask('researcher', '   ', 'Valid description', { userId: 'test-user' });
     }).toThrow(/Task title is required/);
   });
 
@@ -97,14 +97,14 @@ describe('AI Agent Runtime & Provider Tests', () => {
   it('3. rejects missing or empty description', () => {
     const runtime = createTestRuntime({});
     expect(() => {
-      runtime.createTask('researcher', 'Valid title', '');
+      runtime.createTask('researcher', 'Valid title', '', { userId: 'test-user' });
     }).toThrow(/Task description is required/);
   });
 
   // 4. Task creation
   it('4. creates task in queued state with correct properties', () => {
     const runtime = createTestRuntime({});
-    const task = runtime.createTask('researcher', 'Research Task', 'Detailed description');
+    const task = runtime.createTask('researcher', 'Research Task', 'Detailed description', { userId: 'test-user' });
 
     expect(task.title).toBe('Research Task');
     expect(task.description).toBe('Detailed description');
@@ -117,8 +117,8 @@ describe('AI Agent Runtime & Provider Tests', () => {
   // 5. Task ID generation
   it('5. generates unique UUID task IDs', () => {
     const runtime = createTestRuntime({});
-    const task1 = runtime.createTask('manager', 'Task 1', 'Desc 1');
-    const task2 = runtime.createTask('manager', 'Task 2', 'Desc 2');
+    const task1 = runtime.createTask('manager', 'Task 1', 'Desc 1', { userId: 'test-user' });
+    const task2 = runtime.createTask('manager', 'Task 2', 'Desc 2', { userId: 'test-user' });
 
     expect(task1.id).not.toBe(task2.id);
     const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -132,7 +132,7 @@ describe('AI Agent Runtime & Provider Tests', () => {
     const events: AIAgentEvent[] = [];
     runtime.setBroadcaster((evt) => events.push(evt));
 
-    const task = runtime.createTask('analyst', 'Analyze market', 'Market info');
+    const task = runtime.createTask('analyst', 'Analyze market', 'Market info', { userId: 'test-user' });
     expect(task.status).toBe('queued');
 
     await vi.waitFor(
@@ -157,9 +157,9 @@ describe('AI Agent Runtime & Provider Tests', () => {
   it('7. queues sequential tasks for same agent and runs tasks concurrently for different agents', async () => {
     const runtime = createTestRuntime({ delayMs: 150 });
 
-    const taskM1 = runtime.createTask('manager', 'M1', 'Desc');
-    const taskM2 = runtime.createTask('manager', 'M2', 'Desc');
-    const taskR1 = runtime.createTask('researcher', 'R1', 'Desc');
+    const taskM1 = runtime.createTask('manager', 'M1', 'Desc', { userId: 'test-user' });
+    const taskM2 = runtime.createTask('manager', 'M2', 'Desc', { userId: 'test-user' });
+    const taskR1 = runtime.createTask('researcher', 'R1', 'Desc', { userId: 'test-user' });
 
     expect(taskM1.status).toBe('queued');
     expect(taskM2.status).toBe('queued');
@@ -215,7 +215,7 @@ describe('AI Agent Runtime & Provider Tests', () => {
       delayMs: 10,
     });
 
-    const task = runtime.createTask('researcher', 'Fail Task', 'Directives');
+    const task = runtime.createTask('researcher', 'Fail Task', 'Directives', { userId: 'test-user' });
 
     await vi.waitFor(
       () => {
@@ -237,7 +237,7 @@ describe('AI Agent Runtime & Provider Tests', () => {
       delayMs: 10,
     });
 
-    const task = runtime.createTask('manager', 'Simple Objective', 'Direct summary request');
+    const task = runtime.createTask('manager', 'Simple Objective', 'Direct summary request', { userId: 'test-user' });
 
     await vi.waitFor(
       () => {
@@ -268,6 +268,7 @@ describe('AI Agent Runtime & Provider Tests', () => {
       'manager',
       'Evaluate Bitcoin Long Term',
       'Comprehensive crypto evaluation',
+      { userId: 'test-user' },
     );
 
     // Wait for children to be spawned
@@ -413,7 +414,7 @@ describe('AI Agent Runtime & Provider Tests', () => {
       delayMs: 0, // Children complete immediately with 0 delay
     });
 
-    const managerTask = runtime.createTask('manager', 'Fast Objective', 'Directives for immediate children');
+    const managerTask = runtime.createTask('manager', 'Fast Objective', 'Directives for immediate children', { userId: 'test-user' });
 
     await vi.waitFor(
       () => {
@@ -469,7 +470,7 @@ describe('AI Agent Runtime & Provider Tests', () => {
     };
 
     const runtime = new AiAgentRuntime(customProvider, new InMemoryTaskRepository());
-    const managerTask = runtime.createTask('manager', 'Objective with Failing Child', 'Directives');
+    const managerTask = runtime.createTask('manager', 'Objective with Failing Child', 'Directives', { userId: 'test-user' });
 
     await vi.waitFor(
       () => {
@@ -642,5 +643,49 @@ describe('AI Agent Runtime & Provider Tests', () => {
     const recovered = await repo.getTask('user-Y', 'task-idemp-rec');
     expect(recovered?.status).toBe('failed');
     expect(recovered?.error).toContain('Task execution interrupted by server restart');
+  });
+
+  // 24. Production userId requirement
+  it('24. rejects createTask calls when options.userId is missing or empty in production mode', () => {
+    const originalEnv = process.env.NODE_ENV;
+    try {
+      process.env.NODE_ENV = 'production';
+      const runtime = createTestRuntime({});
+      expect(() => {
+        runtime.createTask('manager', 'No User Task', 'Desc', { userId: '' });
+      }).toThrow(/UNAUTHORIZED: userId is required/);
+    } finally {
+      process.env.NODE_ENV = originalEnv;
+    }
+  });
+
+  // 25. Repository rejects task creation without task.userId
+  it('25. InMemoryTaskRepository and FirebaseTaskRepository reject tasks without valid userId', async () => {
+    const repo = new InMemoryTaskRepository();
+    const badTask = {
+      id: 'bad-task-1',
+      title: 'No User',
+      description: 'Desc',
+      userId: '',
+      assignedAgentId: 'researcher',
+      status: 'queued',
+      createdAt: Date.now(),
+    } as AgentTask;
+
+    await expect(repo.createTask(badTask)).rejects.toThrow(/UNAUTHORIZED: task.userId is required/);
+  });
+
+  // 26. Mock token production gating
+  it('26. rejects mock/dev tokens in production environment when mock auth is disabled', async () => {
+    const originalEnv = process.env.NODE_ENV;
+    const originalMock = process.env.ENABLE_MOCK_AUTH;
+    try {
+      process.env.NODE_ENV = 'production';
+      delete process.env.ENABLE_MOCK_AUTH;
+      await expect(verifyFirebaseIdToken('mock-token-user-prod')).rejects.toThrow(/UNAUTHORIZED: Mock authentication tokens are disabled in production/);
+    } finally {
+      process.env.NODE_ENV = originalEnv;
+      process.env.ENABLE_MOCK_AUTH = originalMock;
+    }
   });
 });
